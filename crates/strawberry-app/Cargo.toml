@@ -1,0 +1,50 @@
+[package]
+name = "strawberry-app"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "strawberry"
+path = "src/main.rs"
+
+[dependencies]
+# Internal crates
+strawberry-core = { path = "../strawberry-core" }
+strawberry-video = { path = "../strawberry-video" }
+strawberry-audio = { path = "../strawberry-audio" }
+strawberry-render = { path = "../strawberry-render" }
+strawberry-ui = { path = "../strawberry-ui" }
+strawberry-ai = { path = "../strawberry-ai" }
+
+# ECS
+bevy_ecs.workspace = true
+bevy_app.workspace = true
+bevy_hierarchy.workspace = true
+bevy_tasks.workspace = true
+bevy_time.workspace = true
+
+# UI
+eframe = { workspace = true, features = ["wgpu"] }
+egui.workspace = true
+egui_tiles.workspace = true
+rfd.workspace = true
+glam.workspace = true
+
+# Async
+tokio.workspace = true
+
+# Logging
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+# Error handling
+anyhow.workspace = true
+
+# Serialization
+uuid.workspace = true
+
+# Image loading (for filmstrip thumbnails)
+image.workspace = true
+dirs = "5"

@@ -1,0 +1,110 @@
+﻿cargo : warning: error finalizing incremental compilation session directory `\\?\E:\projectstra
+wberry\target\debug\incremental\strawberry_core-1yxrlqb3wmfvp\s-hg609mlrf5-0l4syor-working`: 
+Access is denied. (os error 5)
+At line:1 char:1
++ cargo check --workspace 2>&1 | Out-File -FilePath "e:\projectstrawber ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (warning: error ...d. (os error 5):String) [], Rem 
+   oteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+
+warning: `strawberry-core` (lib) generated 1 warning
+warning: error finalizing incremental compilation session directory `\\?\E:\projectstrawberry\t
+arget\debug\incremental\strawberry_video-1jt4ib6x6xb09\s-hg3bvwyixp-0l848bc-working`: Access 
+is denied. (os error 5)
+
+warning: `strawberry-video` (lib) generated 1 warning
+warning: error finalizing incremental compilation session directory `\\?\E:\projectstrawberry\t
+arget\debug\incremental\strawberry_audio-0c9u6tpkv8p7q\s-hg3bw0rh11-16n2ram-working`: Access 
+is denied. (os error 5)
+
+warning: unused import: `Parent`
+  --> crates\strawberry-ai\src\query.rs:12:32
+   |
+12 | use bevy_hierarchy::{Children, Parent};
+   |                                ^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: error finalizing incremental compilation session directory `\\?\E:\projectstrawberry\t
+arget\debug\incremental\strawberry_ai-0mifakc3g772p\s-hg609plcst-1jn0jlk-working`: Access is 
+denied. (os error 5)
+
+warning: unused imports: `Pos2` and `Vec2`
+  --> crates\strawberry-ui\src\widgets\timeline_legacy.rs:24:46
+   |
+24 |     pos2, vec2, Align2, Color32, FontId, Id, Pos2, Rect, Response, Rounding, Sense, 
+Stroke, Ui,
+   |                                              ^^^^
+25 |     Vec2, Widget,
+   |     ^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `find_first_visible_thumbnail` is never used
+   --> crates\strawberry-ui\src\widgets\filmstrip.rs:243:8
+    |
+ 96 | impl FilmstripRenderer {
+    | ---------------------- method in this implementation
+...
+243 |     fn find_first_visible_thumbnail(&self, source_in_secs: f64, interval: f64) -> f64 {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: fields `current_frame` and `total_frames` are never read
+  --> crates\strawberry-ui\src\widgets\transport.rs:61:5
+   |
+57 | pub struct TransportWidget {
+   |            --------------- fields in this struct
+...
+61 |     current_frame: u64,
+   |     ^^^^^^^^^^^^^
+...
+65 |     total_frames: u64,
+   |     ^^^^^^^^^^^^
+
+warning: method `show_scrubber` is never used
+   --> crates\strawberry-ui\src\widgets\transport.rs:178:8
+    |
+ 74 | impl TransportWidget {
+    | -------------------- method in this implementation
+...
+178 |     fn show_scrubber(&self, ui: &mut egui::Ui, progress: f32, width: f32) -> Option<f32> 
+{
+    |        ^^^^^^^^^^^^^
+
+warning: error finalizing incremental compilation session directory `\\?\E:\projectstrawberry\t
+arget\debug\incremental\strawberry_ui-27mik1dbhn38s\s-hg60lbc8q6-08xk19g-working`: Access is 
+denied. (os error 5)
+
+warning: `strawberry-audio` (lib) generated 1 warning
+warning: `strawberry-ai` (lib) generated 2 warnings (run `cargo fix --lib -p strawberry-ai` to 
+apply 1 suggestion)
+warning: `strawberry-ui` (lib) generated 5 warnings (run `cargo fix --lib -p strawberry-ui` to 
+apply 1 suggestion)
+warning: error finalizing incremental compilation session directory `\\?\E:\projectstrawberry\t
+arget\debug\incremental\strawberry_render-0541k19xapa7o\s-hg609plp1o-05zjx4v-working`: Access 
+is denied. (os error 5)
+
+warning: `strawberry-render` (lib) generated 1 warning
+warning: unused variable: `pointer_dragging`
+   --> crates\strawberry-app\src\main.rs:503:14
+    |
+503 |         let (pointer_dragging, primary_down, any_down) = ctx.input(|i| {
+    |              ^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an 
+underscore: `_pointer_dragging`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `any_down`
+   --> crates\strawberry-app\src\main.rs:503:46
+    |
+503 |         let (pointer_dragging, primary_down, any_down) = ctx.input(|i| {
+    |                                              ^^^^^^^^ help: if this is intentional, 
+prefix it with an underscore: `_any_down`
+
+warning: `strawberry-app` (bin "strawberry") generated 2 warnings (run `cargo fix --bin 
+"strawberry" -p strawberry-app` to apply 2 suggestions)
+    Finished `dev` profile [optimized + debuginfo] target(s) in 0.62s

@@ -1,0 +1,51 @@
+# Generated files
+/target/
+**/target/
+# Agent and IDE
+.agent/
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+*.o
+*.so
+*.dll
+*.exe
+*.exe.debuginfo
+*.exe.manifest
+*.pdb
+*.lib
+*.a
+
+# Cargo
+Cargo.lock
+Cargo.bin
+
+# Temporary files
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+
+# Rust specific
+**/*.rs.bk
+*.rustfmt.toml.bak
+
+# Profiling files
+perf.data
+perf.data.old
+
+# Research files
+research/
+
+# Test coverage
+coverage/
+*.lcov

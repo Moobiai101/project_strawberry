@@ -1,0 +1,44 @@
+[package]
+name = "strawberry-render"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+# Core (for components/resources)
+strawberry-core = { path = "../strawberry-core" }
+strawberry-video = { path = "../strawberry-video" }
+strawberry-audio = { path = "../strawberry-audio" }
+
+# ECS
+bevy_ecs.workspace = true
+bevy_hierarchy.workspace = true
+
+# UI
+egui.workspace = true
+egui-wgpu.workspace = true
+
+# Serialization
+uuid.workspace = true
+
+# Graphics
+wgpu.workspace = true
+vello.workspace = true
+kurbo.workspace = true
+peniko.workspace = true
+image.workspace = true
+
+# Math
+glam.workspace = true
+
+# Async
+tokio.workspace = true
+parking_lot.workspace = true
+
+# Error handling
+thiserror.workspace = true
+anyhow.workspace = true
+
+# Logging
+tracing.workspace = true

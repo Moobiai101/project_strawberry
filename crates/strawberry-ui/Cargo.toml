@@ -1,0 +1,31 @@
+[package]
+name = "strawberry-ui"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+# Core
+strawberry-core = { path = "../strawberry-core" }
+
+# UI
+egui.workspace = true
+egui-wgpu.workspace = true
+egui_tiles.workspace = true
+
+# ECS
+bevy_ecs.workspace = true
+
+# Math
+glam.workspace = true
+
+# Error handling
+thiserror.workspace = true
+anyhow.workspace = true
+
+# Logging
+tracing.workspace = true
+
+# Identifiers
+uuid.workspace = true

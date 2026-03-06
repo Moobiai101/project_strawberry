@@ -1,0 +1,34 @@
+[package]
+name = "strawberry-audio"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+# Audio I/O
+cpal.workspace = true
+symphonia.workspace = true
+rubato.workspace = true
+dasp.workspace = true
+fundsp.workspace = true
+ringbuf.workspace = true
+kira.workspace = true
+
+# IDs
+uuid.workspace = true
+
+# Async
+tokio.workspace = true
+parking_lot.workspace = true
+
+# Error handling
+thiserror.workspace = true
+anyhow.workspace = true
+
+# Logging
+tracing.workspace = true
+
+# Utils
+serde_json.workspace = true
+which = "7"

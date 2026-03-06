@@ -1,0 +1,48 @@
+[package]
+name = "strawberry-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+# ECS
+bevy_ecs.workspace = true
+bevy_app.workspace = true
+bevy_tasks.workspace = true
+bevy_time.workspace = true
+bevy_hierarchy.workspace = true
+bevy_reflect.workspace = true
+bevy_state.workspace = true
+
+# Math
+glam.workspace = true
+
+# UI (for TextureId in VideoFrame component)
+egui.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+ron.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+
+# Async
+tokio.workspace = true
+parking_lot.workspace = true
+crossbeam.workspace = true
+
+# Error handling
+thiserror.workspace = true
+anyhow.workspace = true
+
+# Bitflags for flags structs
+bitflags.workspace = true
+
+# Logging
+tracing.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+proptest.workspace = true

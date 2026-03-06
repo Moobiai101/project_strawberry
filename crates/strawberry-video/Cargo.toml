@@ -1,0 +1,34 @@
+[package]
+name = "strawberry-video"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+# Image handling
+image.workspace = true
+
+# Async
+tokio.workspace = true
+parking_lot.workspace = true
+
+# Error handling
+thiserror.workspace = true
+anyhow.workspace = true
+
+# Logging
+tracing.workspace = true
+
+# Serialization (for ffprobe JSON parsing and thumbnail manifest)
+serde.workspace = true
+serde_json.workspace = true
+
+# Identifiers
+uuid.workspace = true
+
+# System directories for proxy cache
+dirs = "5"
+
+# Find binaries in PATH
+which = "7"

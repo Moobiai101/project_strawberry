@@ -1,0 +1,33 @@
+[package]
+name = "strawberry-ai"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+# Core
+strawberry-core = { path = "../strawberry-core" }
+bevy_ecs.workspace = true
+bevy_hierarchy.workspace = true
+
+# AI
+# Note: ort requires MSVC toolchain, using OpenAI API for now
+# ort.workspace = true  # Uncomment when using MSVC toolchain
+async-openai.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# Async
+tokio.workspace = true
+parking_lot.workspace = true
+crossbeam.workspace = true
+
+# Error handling
+thiserror.workspace = true
+anyhow.workspace = true
+
+# Logging
+tracing.workspace = true
