@@ -126,6 +126,12 @@ pub fn compositor_system(
         viewport_state.current_texture = None;
         viewport_state.clip_textures.clear();
         viewport_state.is_loading = false;
+
+        // CRITICAL: Clear active layers so audio_mixer_sync_system
+        // stops clips that are no longer on the timeline. Without this,
+        // stale layers persist and audio keeps playing after undo.
+        active_layers_res.layers.clear();
+
         return;
     }
 

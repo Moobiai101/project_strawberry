@@ -200,6 +200,10 @@ pub fn audio_mixer_sync_system(
     if !playhead.is_playing {
         mixer.pause_all();
     }
+
+    // GC handles that kira has confirmed as stopped.
+    // This must run every frame to prevent orphaned sounds.
+    mixer.cleanup_stopped_handles();
 }
 
 /// Find AudioClip volume/pan/mute for a clip by its stable UUID.

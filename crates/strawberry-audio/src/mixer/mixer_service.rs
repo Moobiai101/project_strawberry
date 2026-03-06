@@ -178,8 +178,13 @@ impl KiraMixerService {
             .ok_or(MixerError::ClipNotFound(*asset_uuid))?;
 
         if entry.is_active() {
-            // Already playing — check if we need to seek
+            // Handle exists (playing or paused) — resume + seek if needed
             if let Some(ref mut handle) = entry.handle {
+                // CRITICAL: Always resume in case the handle was paused by pause_all().
+                // Without this, paused handles stay silent forever because is_active()
+                // returns true (handle exists) but audio never starts playing again.
+                handle.resume(Tween::default());
+
                 let current_pos: f64 = handle.position();
                 let drift: f64 = (current_pos - offset_secs).abs();
 
@@ -228,6 +233,16 @@ impl KiraMixerService {
     pub fn stop_all_clips(&mut self) {
         for entry in self.clips.values_mut() {
             entry.stop();
+        }
+    }
+
+    /// Clean up stopped handles across all clips.
+    ///
+    /// Called each frame from `audio_mixer_sync_system`. Drops handles
+    /// only after kira's audio thread has confirmed `Stopped` state.
+    pub fn cleanup_stopped_handles(&mut self) {
+        for entry in self.clips.values_mut() {
+            entry.cleanup_stopped();
         }
     }
 
