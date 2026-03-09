@@ -22,6 +22,7 @@
 
 use bevy_ecs::prelude::*;
 use bevy_hierarchy::prelude::*;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -214,6 +215,18 @@ pub fn compositor_system(
 
     use strawberry_core::resources::ClipTextureLayer;
 
+    // HOLD-FRAME PATTERN (industry standard: DaVinci Resolve, Premiere, FCP)
+    //
+    // Snapshot the PREVIOUS frame's per-clip textures into a HashMap.
+    // When a layer's decode returns Loading (async not finished yet),
+    // we reuse the previous texture instead of showing black.
+    // O(1) lookup per clip, O(active_layers) to build — scales to 1000+ clips.
+    let previous_clip_textures: HashMap<uuid::Uuid, ClipTextureLayer> = viewport_state
+        .clip_textures
+        .iter()
+        .map(|ct| (ct.clip_uuid, ct.clone()))
+        .collect();
+
     let mut clip_texture_layers: Vec<ClipTextureLayer> = Vec::with_capacity(layers.len());
     let mut topmost_texture: Option<egui::TextureId> = None;
     let mut topmost_resolution: glam::UVec2 = glam::UVec2::new(1920, 1080);
@@ -235,46 +248,39 @@ pub fn compositor_system(
                     frame.height,
                 );
 
-                // KEY DESIGN: Two keying strategies for texture slots.
+                // TEXTURE KEY DESIGN: Always use STABLE keys per clip.
                 //
-                // PLAYBACK MODE (is_playing = true):
-                //   Use a STABLE key per clip (no source_time). This means the
-                //   same texture slot is reused every frame — we just rewrite
-                //   its pixel data in-place via `queue_upload()`. This avoids
-                //   exhausting the LRU cache (16 slots) at 30fps.
+                // WHY NOT per-time keys for scrubbing?
+                // TextureManager has a queue_upload → process_uploads timing gap:
+                //   1. queue_upload() adds frame to pending list
+                //   2. get_texture() tries to find the slot
+                //   3. process_uploads() actually uploads to GPU (runs AFTER schedule)
+                // Per-time keys create a NEW key each seek, so get_texture()
+                // always misses (slot doesn't exist yet). Stable keys reuse the
+                // same slot — get_texture() finds the existing slot while
+                // process_uploads() overwrites its pixel data in-place.
                 //
-                // SCRUB / PAUSED MODE:
-                //   Use a per-time key so different scrub positions each get
-                //   their own cached slot, enabling instant back-and-forth.
-                let layer_key: strawberry_video::cache::FrameKey = if is_playing {
-                    // Stable key — reuses same slot, data updated each frame
+                // This is how DaVinci Resolve and Premiere handle it:
+                // one GPU texture per active layer, data overwritten each frame.
+                let layer_key: strawberry_video::cache::FrameKey =
                     strawberry_video::cache::FrameKey::new(
                         PathBuf::from(format!("clip_{}", layer.clip_uuid)),
-                        Duration::ZERO, // stable: no source_time in key
+                        Duration::ZERO, // stable: same slot reused every frame
                         frame.width,
                         frame.height,
-                    )
-                } else {
-                    // Per-time key — each scrub position cached independently
-                    strawberry_video::cache::FrameKey::new(
-                        PathBuf::from(format!("clip_{}", layer.clip_uuid)),
-                        layer.source_time,
-                        frame.width,
-                        frame.height,
-                    )
-                };
+                    );
 
-                // Queue for GPU upload. During playback the key is stable, so
-                // TextureManager will rewrite the existing slot's pixel data
-                // instead of allocating a new one.
+                // Queue for GPU upload. The key is stable, so TextureManager
+                // will rewrite the existing slot's pixel data in-place instead
+                // of allocating a new one.
                 texture_manager.queue_upload(layer_key.clone(), (*frame).clone());
 
-                // Look up THIS layer's texture by its unique key.
+                // Look up THIS layer's texture by its unique stable key.
                 //
-                // CRITICAL: Do NOT fall back to get_current_texture() here!
-                // That returns the LAST uploaded texture (from ANY clip), which
-                // causes clip A to show clip B's video. Each layer must wait
-                // for its own texture to be uploaded via process_uploads().
+                // Because we always use stable keys, the slot from the previous
+                // frame's process_uploads() is still valid. get_texture() finds
+                // it immediately, and the queued upload will overwrite the pixel
+                // data when process_uploads() runs later this frame.
                 let layer_texture_id: Option<egui::TextureId> =
                     texture_manager.get_texture(&layer_key);
 
@@ -291,17 +297,42 @@ pub fn compositor_system(
                     // Track topmost layer for backward compat
                     topmost_texture = Some(texture_id);
                     topmost_resolution = resolution;
+                } else if let Some(prev_layer) = previous_clip_textures.get(&layer.clip_uuid) {
+                    // Slot doesn't exist yet (first frame for this clip).
+                    // Use the previous frame's texture as a bridge until
+                    // process_uploads() creates the slot.
+                    clip_texture_layers.push(prev_layer.clone());
+                    topmost_texture = Some(prev_layer.texture_id);
+                    topmost_resolution = prev_layer.source_resolution;
                 } else {
                     any_loading = true;
                 }
             }
             FrameStatus::Loading => {
-                tracing::trace!(
-                    "Compositor: Layer {} loading at source_time {:?}",
-                    layer_idx,
-                    layer.source_time
-                );
-                any_loading = true;
+                // CHANGE 1: Hold-frame retention.
+                //
+                // Instead of showing black while the async decoder works,
+                // reuse the PREVIOUS frame's texture for this clip. The stale
+                // frame is visible for at most 1-2 render ticks (~16-33ms),
+                // which is imperceptible. As soon as the decode finishes,
+                // the next frame's Ready branch replaces it.
+                if let Some(prev_layer) = previous_clip_textures.get(&layer.clip_uuid) {
+                    clip_texture_layers.push(prev_layer.clone());
+                    topmost_texture = Some(prev_layer.texture_id);
+                    topmost_resolution = prev_layer.source_resolution;
+                    tracing::trace!(
+                        "Compositor: Layer {} loading — reusing previous texture",
+                        layer_idx,
+                    );
+                } else {
+                    // No previous texture exists (first frame ever for this clip)
+                    tracing::trace!(
+                        "Compositor: Layer {} loading at source_time {:?} (no previous)",
+                        layer_idx,
+                        layer.source_time
+                    );
+                    any_loading = true;
+                }
             }
             FrameStatus::Error(e) => {
                 tracing::warn!(

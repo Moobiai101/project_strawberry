@@ -440,6 +440,15 @@ pub struct AddClipCommand {
     /// Stable UUID for the created clip - persists across undo/redo
     #[serde(skip)]
     stable_id: Option<uuid::Uuid>,
+
+    /// UUID of the track auto-created by collision resolution (AutoTrack mode).
+    /// Persists across undo/redo so we can reuse the same track identity on redo
+    /// and clean it up on undo.
+    #[serde(skip)]
+    auto_created_track_uuid: Option<uuid::Uuid>,
+    /// Entity bits of the auto-created track (stale after undo, resolved via UUID on redo)
+    #[serde(skip)]
+    auto_created_track_entity: Option<u64>,
 }
 
 impl AddClipCommand {
@@ -457,6 +466,8 @@ impl AddClipCommand {
             auto_sequence: false,
             created_entity: None,
             stable_id: None,
+            auto_created_track_uuid: None,
+            auto_created_track_entity: None,
         }
     }
 
@@ -508,15 +519,25 @@ impl Command for AddClipCommand {
         }
 
         // Calculate actual timeline position:
-        // If auto_sequence is enabled, place clip at end of last clip on track
-        // Otherwise use the explicit `at` position
+        // If auto_sequence is enabled, place clip at end of last clip on track.
+        // CRITICAL: Store the resolved position back in self.at so that redo
+        // uses the exact same position instead of re-calculating (which would
+        // produce a different value if clips have changed).
         let actual_position_secs: f64 = if self.auto_sequence {
-            let track_end = crate::resources::calculate_track_end_time(world, track_entity);
-            tracing::debug!(
-                "Auto-sequence: placing clip at track end ({:.2}s)",
-                track_end.as_secs_f64()
-            );
-            track_end.as_secs_f64()
+            if self.stable_id.is_some() {
+                // Redo path: stable_id was set on first execute, use stored position
+                self.at
+            } else {
+                // First execute: resolve and store
+                let track_end = crate::resources::calculate_track_end_time(world, track_entity);
+                let resolved: f64 = track_end.as_secs_f64();
+                tracing::debug!(
+                    "Auto-sequence: placing clip at track end ({:.2}s)",
+                    resolved
+                );
+                self.at = resolved; // Pin for redo
+                resolved
+            }
         } else {
             self.at
         };
@@ -571,89 +592,151 @@ impl Command for AddClipCommand {
         // ====================================================================
         // Check if placing this clip would overlap existing clips.
         // If collision detected with AutoTrack mode, create a new track.
+        //
+        // On REDO: if we previously created a track for collision resolution,
+        // we recreate it with the SAME UUID to maintain stable identity.
+        // This prevents the "rows keep multiplying" bug.
         let mut final_track_entity: Entity = track_entity;
 
-        let track_uuid_opt: Option<uuid::Uuid> =
-            world.get::<StableId>(track_entity).map(|s| s.uuid());
+        if let Some(auto_track_uuid) = self.auto_created_track_uuid {
+            // ================================================================
+            // REDO PATH: Re-create the auto-track with the same UUID
+            // ================================================================
+            // We already know from the first execute that a collision occurred
+            // and a track was created. Recreate it with the same identity.
+            let timeline_entity: Option<Entity> =
+                world.get::<Parent>(track_entity).map(|p| p.get());
 
-        if let Some(track_uuid) = track_uuid_opt {
-            // Perform collision check
-            if let Some(collision) = crate::systems::check_collision(
-                world,
-                track_uuid,
-                timeline_start,
-                clip_duration,
-                None, // Not excluding any clip (this is a new clip)
-            ) {
-                use crate::resources::collision::CollisionAction;
+            if let Some(timeline) = timeline_entity {
+                let new_track_index: u32 = world
+                    .get::<bevy_hierarchy::Children>(timeline)
+                    .map(|children| {
+                        children
+                            .iter()
+                            .filter_map(|&e| world.get::<Track>(e))
+                            .filter(|t| matches!(t.track_type, TrackType::Video))
+                            .count() as u32
+                    })
+                    .unwrap_or(0);
 
-                match collision.suggested_action {
-                    CollisionAction::CreateTrack { .. } => {
-                        // AutoTrack mode: Create a new track for this clip
-                        tracing::info!(
-                            "Collision detected on track. Creating new track (AutoTrack mode)."
-                        );
+                let new_track: Entity = world
+                    .spawn((
+                        Track {
+                            index: new_track_index,
+                            track_type: TrackType::Video,
+                            name: format!("V{}", new_track_index + 1),
+                            locked: false,
+                            muted: false,
+                            solo: false,
+                            visible: true,
+                        },
+                        TrackDisplay::default(),
+                        TimelineChild,
+                        StableId::from_uuid(auto_track_uuid),
+                    ))
+                    .id();
 
-                        // Find the timeline entity (parent of track)
-                        let timeline_entity: Option<Entity> =
-                            world.get::<Parent>(track_entity).map(|p| p.get());
+                world
+                    .resource_mut::<StableIdRegistry>()
+                    .register(auto_track_uuid, new_track);
 
-                        if let Some(timeline) = timeline_entity {
-                            // Count existing video tracks to determine new track index
-                            let new_track_index: u32 = world
-                                .get::<bevy_hierarchy::Children>(timeline)
-                                .map(|children| {
-                                    children
-                                        .iter()
-                                        .filter_map(|&e| world.get::<Track>(e))
-                                        .filter(|t| matches!(t.track_type, TrackType::Video))
-                                        .count() as u32
-                                })
-                                .unwrap_or(0);
+                world.entity_mut(timeline).add_child(new_track);
+                self.auto_created_track_entity = Some(new_track.to_bits());
+                final_track_entity = new_track;
 
-                            // Create new track
-                            let new_track_uuid: uuid::Uuid = uuid::Uuid::new_v4();
-                            let new_track: Entity = world
-                                .spawn((
-                                    Track {
-                                        index: new_track_index,
-                                        track_type: TrackType::Video,
-                                        name: format!("V{}", new_track_index + 1),
-                                        locked: false,
-                                        muted: false,
-                                        solo: false,
-                                        visible: true,
-                                    },
-                                    TrackDisplay::default(),
-                                    TimelineChild,
-                                    StableId::from_uuid(new_track_uuid),
-                                ))
-                                .id();
+                tracing::debug!(
+                    "Redo: re-created auto-track 'V{}' (UUID: {}) for collision resolution",
+                    new_track_index + 1,
+                    &auto_track_uuid.to_string()[..8]
+                );
+            }
+        } else {
+            // ================================================================
+            // FIRST EXECUTE PATH: Run collision detection normally
+            // ================================================================
+            let track_uuid_opt: Option<uuid::Uuid> =
+                world.get::<StableId>(track_entity).map(|s| s.uuid());
 
-                            world
-                                .resource_mut::<StableIdRegistry>()
-                                .register(new_track_uuid, new_track);
+            if let Some(track_uuid) = track_uuid_opt {
+                if let Some(collision) = crate::systems::check_collision(
+                    world,
+                    track_uuid,
+                    timeline_start,
+                    clip_duration,
+                    None, // Not excluding any clip (this is a new clip)
+                ) {
+                    use crate::resources::collision::CollisionAction;
 
-                            world.entity_mut(timeline).add_child(new_track);
-
-                            tracing::debug!(
-                                "Created new track 'V{}' (UUID: {}) for collision resolution",
-                                new_track_index + 1,
-                                &new_track_uuid.to_string()[..8]
+                    match collision.suggested_action {
+                        CollisionAction::CreateTrack { .. } => {
+                            // AutoTrack mode: Create a new track for this clip
+                            tracing::info!(
+                                "Collision detected on track. Creating new track (AutoTrack mode)."
                             );
 
-                            final_track_entity = new_track;
+                            let timeline_entity: Option<Entity> =
+                                world.get::<Parent>(track_entity).map(|p| p.get());
+
+                            if let Some(timeline) = timeline_entity {
+                                let new_track_index: u32 = world
+                                    .get::<bevy_hierarchy::Children>(timeline)
+                                    .map(|children| {
+                                        children
+                                            .iter()
+                                            .filter_map(|&e| world.get::<Track>(e))
+                                            .filter(|t| matches!(t.track_type, TrackType::Video))
+                                            .count() as u32
+                                    })
+                                    .unwrap_or(0);
+
+                                // Create new track and persist its UUID for undo/redo
+                                let new_track_uuid: uuid::Uuid = uuid::Uuid::new_v4();
+                                let new_track: Entity = world
+                                    .spawn((
+                                        Track {
+                                            index: new_track_index,
+                                            track_type: TrackType::Video,
+                                            name: format!("V{}", new_track_index + 1),
+                                            locked: false,
+                                            muted: false,
+                                            solo: false,
+                                            visible: true,
+                                        },
+                                        TrackDisplay::default(),
+                                        TimelineChild,
+                                        StableId::from_uuid(new_track_uuid),
+                                    ))
+                                    .id();
+
+                                world
+                                    .resource_mut::<StableIdRegistry>()
+                                    .register(new_track_uuid, new_track);
+
+                                world.entity_mut(timeline).add_child(new_track);
+
+                                // Store auto-created track info for undo/redo
+                                self.auto_created_track_uuid = Some(new_track_uuid);
+                                self.auto_created_track_entity = Some(new_track.to_bits());
+
+                                tracing::debug!(
+                                    "Created new track 'V{}' (UUID: {}) for collision resolution",
+                                    new_track_index + 1,
+                                    &new_track_uuid.to_string()[..8]
+                                );
+
+                                final_track_entity = new_track;
+                            }
                         }
-                    }
-                    CollisionAction::Reject { reason } => {
-                        return Err(CommandError::InvalidOperation(format!(
-                            "Cannot add clip: {}",
-                            reason
-                        )));
-                    }
-                    _ => {
-                        // Ripple/Overwrite: Phase 2C - for now, proceed normally
-                        tracing::trace!("Collision mode not AutoTrack/Reject, proceeding");
+                        CollisionAction::Reject { reason } => {
+                            return Err(CommandError::InvalidOperation(format!(
+                                "Cannot add clip: {}",
+                                reason
+                            )));
+                        }
+                        _ => {
+                            // Ripple/Overwrite: Phase 2C - for now, proceed normally
+                            tracing::trace!("Collision mode not AutoTrack/Reject, proceeding");
+                        }
                     }
                 }
             }
@@ -732,6 +815,23 @@ impl Command for AddClipCommand {
             self.created_entity = None;
             // NOTE: We do NOT clear stable_id - it's needed for redo
         }
+
+        // Also clean up the auto-created track from collision resolution.
+        // Without this, undo leaves an orphaned empty track row behind,
+        // and redo would create yet another new track each time.
+        if let Some(track_uuid) = self.auto_created_track_uuid {
+            if let Some(track_entity) = world.resource::<StableIdRegistry>().get(&track_uuid) {
+                world.resource_mut::<StableIdRegistry>().park(&track_uuid);
+                world.entity_mut(track_entity).despawn_recursive();
+                tracing::debug!(
+                    "Undo: removed auto-created track (UUID: {})",
+                    &track_uuid.to_string()[..8]
+                );
+            }
+            self.auto_created_track_entity = None;
+            // NOTE: Keep auto_created_track_uuid — needed for redo to recreate with same identity
+        }
+
         Ok(())
     }
 

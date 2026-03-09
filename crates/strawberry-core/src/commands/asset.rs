@@ -259,6 +259,15 @@ pub struct AddAssetToTimelineCommand {
     /// Whether this command auto-created a timeline (for undo)
     #[serde(skip)]
     auto_created_timeline: bool,
+
+    /// UUID of the track auto-created when the target track already has clips.
+    /// Persists across undo/redo so we can reuse the same track identity on redo
+    /// and clean it up on undo — prevents the "rows keep multiplying" bug.
+    #[serde(skip)]
+    auto_created_track_uuid: Option<Uuid>,
+    /// Entity bits of the auto-created track (stale after undo, resolved via UUID on redo)
+    #[serde(skip)]
+    auto_created_track_entity: Option<u64>,
 }
 
 impl AddAssetToTimelineCommand {
@@ -273,6 +282,8 @@ impl AddAssetToTimelineCommand {
             created_clip_uuid: Uuid::new_v4(),
             resolved_position: None,
             auto_created_timeline: false,
+            auto_created_track_uuid: None,
+            auto_created_track_entity: None,
         }
     }
 
@@ -287,6 +298,8 @@ impl AddAssetToTimelineCommand {
             created_clip_uuid: Uuid::new_v4(),
             resolved_position: None,
             auto_created_timeline: false,
+            auto_created_track_uuid: None,
+            auto_created_track_entity: None,
         }
     }
 
@@ -301,6 +314,8 @@ impl AddAssetToTimelineCommand {
             created_clip_uuid: Uuid::new_v4(),
             resolved_position: None,
             auto_created_timeline: false,
+            auto_created_track_uuid: None,
+            auto_created_track_entity: None,
         }
     }
 
@@ -315,6 +330,8 @@ impl AddAssetToTimelineCommand {
             created_clip_uuid: Uuid::new_v4(),
             resolved_position: None,
             auto_created_timeline: false,
+            auto_created_track_uuid: None,
+            auto_created_track_entity: None,
         }
     }
 
@@ -380,31 +397,38 @@ impl Command for AddAssetToTimelineCommand {
                 .ok_or_else(|| CommandError::InvalidOperation("No video track found".to_string()))?
         };
 
-        // Resolve insertion position with frame-accurate snapping
-        let insert_position: Duration =
-            resolve_insertion_position(world, &self.insertion_intent, track_entity, frame_rate);
-        self.resolved_position = Some(insert_position);
+        // Resolve insertion position with frame-accurate snapping.
+        //
+        // CRITICAL: On redo, we MUST reuse the position from the first execute.
+        // Re-resolving would read the current playhead (which likely moved) or
+        // recalculate track-end (which changed), causing position drift that
+        // breaks downstream commands (e.g. SplitClip at the old position).
+        let insert_position: Duration = if let Some(stored_pos) = self.resolved_position {
+            // Redo path: reuse the exact position from first execute
+            stored_pos
+        } else {
+            // First execute: resolve from intent and store for future redo
+            let pos: Duration =
+                resolve_insertion_position(world, &self.insertion_intent, track_entity, frame_rate);
+            self.resolved_position = Some(pos);
+            pos
+        };
 
         // ===================================================================
         // MULTI-TRACK PLACEMENT (CapCut/DaVinci-style AutoTrack)
         // ===================================================================
         // Each clip goes on its own track so the compositor can layer them.
-        // - EndOfTrack mode: if track has clips, create new track at position 0
-        // - Explicit position modes: use collision detection for overlap resolution
+        //
+        // On REDO: if we previously created a track, we recreate it with the
+        // SAME UUID to maintain stable identity. This prevents the "rows keep
+        // multiplying" bug where each undo/redo cycle creates a new track.
         let mut final_track_entity: Entity = track_entity;
         let mut final_insert_position: Duration = insert_position;
 
-        // Check if target track already has clips
-        let track_has_clips: bool = {
-            let mut clip_query =
-                world.query::<(&crate::components::TrackClip, &bevy_hierarchy::Parent)>();
-            clip_query
-                .iter(world)
-                .any(|(_tc, parent)| parent.get() == track_entity)
-        };
-
-        if track_has_clips {
-            // Track has clips - create a new track for this clip
+        if let Some(auto_track_uuid) = self.auto_created_track_uuid {
+            // =============================================================
+            // REDO PATH: Re-create the auto-track with the same UUID
+            // =============================================================
             let timeline_entity: Option<Entity> = world
                 .get::<bevy_hierarchy::Parent>(track_entity)
                 .map(|p| p.get());
@@ -421,7 +445,6 @@ impl Command for AddAssetToTimelineCommand {
                     })
                     .unwrap_or(0);
 
-                let new_track_uuid: Uuid = Uuid::new_v4();
                 let new_track: Entity = world
                     .spawn((
                         Track {
@@ -433,29 +456,101 @@ impl Command for AddAssetToTimelineCommand {
                             solo: false,
                             visible: true,
                         },
-                        crate::components::StableId::from_uuid(new_track_uuid),
+                        crate::components::StableId::from_uuid(auto_track_uuid),
                     ))
                     .id();
 
                 if let Some(mut registry) = world.get_resource_mut::<StableIdRegistry>() {
-                    registry.register(new_track_uuid, new_track);
+                    registry.register(auto_track_uuid, new_track);
                 }
 
                 world.entity_mut(timeline).add_child(new_track);
+                self.auto_created_track_entity = Some(new_track.to_bits());
+                final_track_entity = new_track;
 
                 tracing::info!(
-                    "Track has clips — created 'V{}' for new clip",
-                    new_track_index + 1
+                    "Redo: re-created auto-track 'V{}' (UUID: {}) for clip placement",
+                    new_track_index + 1,
+                    &auto_track_uuid.to_string()[..8]
                 );
 
-                final_track_entity = new_track;
-                // For EndOfTrack mode, the resolved position was the OLD track's
-                // end time — meaningless on a brand-new empty track, so reset to 0.
-                // For all explicit-position intents (AtPlayhead, AtPosition,
-                // RippleAt), preserve the resolved position so the clip starts
-                // where the user expects.
+                // For EndOfTrack mode, reset to 0 since the re-created track is empty
                 if self.insertion_intent.is_auto_sequence() {
                     final_insert_position = Duration::ZERO;
+                }
+            }
+        } else {
+            // =============================================================
+            // FIRST EXECUTE PATH: Check if track has clips, create if needed
+            // =============================================================
+            let track_has_clips: bool = {
+                let mut clip_query =
+                    world.query::<(&crate::components::TrackClip, &bevy_hierarchy::Parent)>();
+                clip_query
+                    .iter(world)
+                    .any(|(_tc, parent)| parent.get() == track_entity)
+            };
+
+            if track_has_clips {
+                // Track has clips - create a new track for this clip
+                let timeline_entity: Option<Entity> = world
+                    .get::<bevy_hierarchy::Parent>(track_entity)
+                    .map(|p| p.get());
+
+                if let Some(timeline) = timeline_entity {
+                    let new_track_index: u32 = world
+                        .get::<bevy_hierarchy::Children>(timeline)
+                        .map(|children| {
+                            children
+                                .iter()
+                                .filter_map(|&e| world.get::<Track>(e))
+                                .filter(|t| {
+                                    matches!(t.track_type, crate::components::TrackType::Video)
+                                })
+                                .count() as u32
+                        })
+                        .unwrap_or(0);
+
+                    let new_track_uuid: Uuid = Uuid::new_v4();
+                    let new_track: Entity = world
+                        .spawn((
+                            Track {
+                                index: new_track_index,
+                                track_type: crate::components::TrackType::Video,
+                                name: format!("V{}", new_track_index + 1),
+                                locked: false,
+                                muted: false,
+                                solo: false,
+                                visible: true,
+                            },
+                            crate::components::StableId::from_uuid(new_track_uuid),
+                        ))
+                        .id();
+
+                    if let Some(mut registry) = world.get_resource_mut::<StableIdRegistry>() {
+                        registry.register(new_track_uuid, new_track);
+                    }
+
+                    world.entity_mut(timeline).add_child(new_track);
+
+                    // Store auto-created track info for undo/redo
+                    self.auto_created_track_uuid = Some(new_track_uuid);
+                    self.auto_created_track_entity = Some(new_track.to_bits());
+
+                    tracing::info!(
+                        "Track has clips — created 'V{}' for new clip",
+                        new_track_index + 1
+                    );
+
+                    final_track_entity = new_track;
+                    // For EndOfTrack mode, the resolved position was the OLD track's
+                    // end time — meaningless on a brand-new empty track, so reset to 0.
+                    // For all explicit-position intents (AtPlayhead, AtPosition,
+                    // RippleAt), preserve the resolved position so the clip starts
+                    // where the user expects.
+                    if self.insertion_intent.is_auto_sequence() {
+                        final_insert_position = Duration::ZERO;
+                    }
                 }
             }
         }
@@ -523,13 +618,35 @@ impl Command for AddAssetToTimelineCommand {
                 }
             }
 
-            // Unregister from StableIdRegistry
+            // Unregister clip from StableIdRegistry
             if let Some(mut registry) = world.get_resource_mut::<StableIdRegistry>() {
                 registry.park(&self.created_clip_uuid);
             }
 
             // Despawn the clip
             world.despawn(entity);
+
+            // Clean up auto-created track from collision resolution.
+            // Without this, undo leaves an orphaned empty track row behind,
+            // and redo would create yet another new track each time.
+            if let Some(track_uuid) = self.auto_created_track_uuid {
+                let track_entity_to_despawn: Option<Entity> = world
+                    .get_resource::<StableIdRegistry>()
+                    .and_then(|r| r.get(&track_uuid));
+
+                if let Some(track_entity) = track_entity_to_despawn {
+                    if let Some(mut registry) = world.get_resource_mut::<StableIdRegistry>() {
+                        registry.park(&track_uuid);
+                    }
+                    world.despawn(track_entity);
+                    tracing::info!(
+                        "Undo: removed auto-created track (UUID: {})",
+                        &track_uuid.to_string()[..8]
+                    );
+                }
+                self.auto_created_track_entity = None;
+                // NOTE: Keep auto_created_track_uuid — needed for redo to recreate with same identity
+            }
 
             // TODO: If we auto-created timeline, consider cleaning it up if empty
 

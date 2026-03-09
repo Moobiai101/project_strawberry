@@ -251,6 +251,17 @@ impl VideoAssetManager {
     /// Stop playback mode for ALL services.
     ///
     /// Returns to random-access mode for scrubbing/seeking.
+    ///
+    /// ## Hold-Frame Bridge
+    ///
+    /// Before destroying each PipeDecoder, grabs its last decoded frame and
+    /// inserts it into the JPEG LRU cache. This ensures the FIRST random-access
+    /// request after pause gets an instant cache hit (~0.01ms) instead of
+    /// triggering an async decode that takes 50-100ms — eliminating the black
+    /// frame flash on the play→pause transition.
+    ///
+    /// Iterates `services` (one per unique video asset, NOT per clip), so this
+    /// scales to 1000+ clips without performance issues.
     pub fn stop_playback(&mut self) {
         if !self.playback_active {
             return;
@@ -258,7 +269,30 @@ impl VideoAssetManager {
 
         tracing::debug!("VideoAssetManager: Stopping playback mode");
 
-        // Stop playback on ALL services (mirrors start_playback symmetry)
+        // CHANGE 3: Cache the last playback frame BEFORE destroying PipeDecoders.
+        //
+        // The PipeDecoder's internal buffer has the last decoded frame. Once
+        // stop_playback() is called, the buffer is destroyed and the frame is
+        // lost. Grabbing it now and inserting into the LRU cache means the
+        // compositor's first random-access request will get an instant hit.
+        let asset_uuids: Vec<Uuid> = self.services.keys().copied().collect();
+        for asset_uuid in &asset_uuids {
+            if let Some(service) = self.services.get(asset_uuid) {
+                if let Some(last_frame) = service.request_latest_playback_frame() {
+                    // Approximate the frame number from the frame's timestamp
+                    let frame_number: u32 = (last_frame.timestamp.as_secs_f64() * 30.0) as u32;
+                    let cache_key: (Uuid, u32) = (*asset_uuid, frame_number);
+                    self.frame_cache.insert_video_frame(cache_key, &last_frame);
+                    tracing::debug!(
+                        "Cached last playback frame for asset {} (frame {})",
+                        &asset_uuid.to_string()[..8],
+                        frame_number
+                    );
+                }
+            }
+        }
+
+        // Now stop playback on ALL services (mirrors start_playback symmetry)
         for service in self.services.values_mut() {
             service.stop_playback();
         }
