@@ -16,7 +16,7 @@
 //! 3. **Video Decode**: ~100ms - full decoder fallback
 
 use bevy_ecs::prelude::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::Duration;
 use uuid::Uuid;
@@ -60,6 +60,8 @@ pub struct VideoAssetManager {
     /// Buffer of asset UUIDs whose proxy just completed.
     /// Drained by main.rs to sync `AssetRegistry.proxy_status` to `Ready`.
     pending_proxy_completions: Vec<(Uuid, PathBuf)>,
+    /// Paths currently being loaded in background threads (prevents duplicate imports)
+    pending_imports: HashSet<PathBuf>,
 }
 
 impl Default for VideoAssetManager {
@@ -99,6 +101,7 @@ impl VideoAssetManager {
             proxy_manager,
             frame_cache,
             pending_proxy_completions: Vec::new(),
+            pending_imports: HashSet::new(),
         }
     }
 
@@ -150,6 +153,83 @@ impl VideoAssetManager {
         }
 
         Ok(uuid)
+    }
+
+    /// Register a pre-loaded VideoService created on a background thread.
+    ///
+    /// This is called by the main thread after a background import thread
+    /// completes. The `VideoService` was created and loaded on a background
+    /// thread to avoid blocking the UI during FFmpeg probe (~200-500ms).
+    ///
+    /// ## Arguments
+    ///
+    /// - `uuid`: The UUID assigned to this asset (generated before spawning the thread)
+    /// - `service`: The fully loaded VideoService (with metadata already probed)
+    /// - `path`: Original source file path
+    /// - `duration`: Video duration from probe (needed for proxy queue)
+    /// - `frame_rate`: Video frame rate from probe (needed for proxy queue)
+    pub fn register_loaded_service(
+        &mut self,
+        uuid: Uuid,
+        service: VideoService,
+        path: PathBuf,
+        duration: Duration,
+        frame_rate: f64,
+    ) {
+        // Insert service into the manager
+        self.path_to_uuid.insert(path.clone(), uuid);
+        self.source_paths.insert(uuid, path.clone());
+        self.services.insert(uuid, service);
+
+        // Queue proxy generation (if proxy manager available)
+        if let Some(ref proxy_manager) = self.proxy_manager {
+            let proxy_path = proxy_manager.queue_proxy(uuid, &path, duration, frame_rate);
+            tracing::info!(
+                "Queued proxy generation for background-loaded asset {}: {:?}",
+                &uuid.to_string()[..8],
+                proxy_path
+            );
+        }
+
+        // Only set active asset on FIRST load
+        if self.active_asset_uuid.is_none() {
+            self.active_asset_uuid = Some(uuid);
+        }
+
+        // Clear from pending imports
+        self.pending_imports.remove(&path);
+
+        tracing::info!(
+            "Registered background-loaded asset {}: {:?}",
+            &uuid.to_string()[..8],
+            path
+        );
+    }
+
+    /// Mark a path as currently being loaded in a background thread.
+    ///
+    /// Returns `false` if the path is already loading or already loaded.
+    pub fn mark_import_pending(&mut self, path: &std::path::Path) -> bool {
+        // Already loaded?
+        if self.path_to_uuid.contains_key(path) {
+            return false;
+        }
+        // Already being loaded in background?
+        if self.pending_imports.contains(path) {
+            return false;
+        }
+        self.pending_imports.insert(path.to_path_buf());
+        true
+    }
+
+    /// Clear a path from pending imports (called on import failure)
+    pub fn clear_import_pending(&mut self, path: &std::path::Path) {
+        self.pending_imports.remove(path);
+    }
+
+    /// Check if a path is currently being loaded in a background thread
+    pub fn is_import_pending(&self, path: &std::path::Path) -> bool {
+        self.pending_imports.contains(path)
     }
 
     /// Get the currently active asset UUID
@@ -236,6 +316,12 @@ impl VideoAssetManager {
 
         self.playback_active = true;
 
+        // Suspend proxy FFmpeg processes to eliminate I/O contention.
+        // This is the same approach used by Premiere Pro and DaVinci Resolve.
+        if let Some(ref proxy_manager) = self.proxy_manager {
+            proxy_manager.suspend_proxy_processes();
+        }
+
         // Log errors but don't fail — partial playback is better than none
         if !errors.is_empty() {
             tracing::warn!(
@@ -298,6 +384,12 @@ impl VideoAssetManager {
         }
 
         self.playback_active = false;
+
+        // Resume proxy FFmpeg processes now that playback has stopped.
+        // They'll continue generating at IDLE_PRIORITY_CLASS.
+        if let Some(ref proxy_manager) = self.proxy_manager {
+            proxy_manager.resume_proxy_processes();
+        }
     }
 
     /// Check if playback mode is active

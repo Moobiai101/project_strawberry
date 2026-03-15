@@ -25,7 +25,9 @@ use strawberry_core::resources::{
     CommandQueue, MasterAudioState, Playhead, ScrubState, ThumbnailTextureCache, UndoRedoStack,
     ViewportState,
 };
-use strawberry_core::systems::{execute_commands_system, playhead_advance_system, PlaybackClock};
+use strawberry_core::systems::{
+    execute_commands_system, playhead_advance_system, timeline_duration_sync_system, PlaybackClock,
+};
 use strawberry_render::{
     audio_mixer_sync_system, compositor_system, ActiveLayersResource, AudioMixerResource,
     CompositorCache, CompositorOutput, TextureManager, ThumbnailTextureManager, TraverserResource,
@@ -106,6 +108,10 @@ struct StrawberryApp {
     audio_extraction_rx: mpsc::Receiver<AudioExtractionResult>,
     /// Sender cloned into each spawned audio extraction thread
     audio_extraction_tx: mpsc::Sender<AudioExtractionResult>,
+    /// Receiver for completed background asset imports (polled each frame)
+    asset_import_rx: mpsc::Receiver<AssetImportResult>,
+    /// Sender cloned into each spawned asset import thread
+    asset_import_tx: mpsc::Sender<AssetImportResult>,
 }
 
 impl StrawberryApp {
@@ -160,11 +166,13 @@ impl StrawberryApp {
         // Add systems - ORDER MATTERS!
         // 1. Execute commands first (process user input)
         schedule.add_systems(execute_commands_system);
-        // 2. Advance playhead (before compositor so it uses new position)
+        // 2. Sync timeline duration from clip endpoints (before playhead advance)
+        schedule.add_systems(timeline_duration_sync_system);
+        // 3. Advance playhead (uses synced duration for bounds checking)
         schedule.add_systems(playhead_advance_system);
-        // 3. Compositor renders timeline content using NodeTraverser
+        // 4. Compositor renders timeline content using NodeTraverser
         schedule.add_systems(compositor_system);
-        // 4. Audio mixer sync — uses traverser layers to play active clips
+        // 5. Audio mixer sync — uses traverser layers to play active clips
         schedule.add_systems(audio_mixer_sync_system);
 
         // Configure wgpu if available
@@ -173,6 +181,7 @@ impl StrawberryApp {
         }
 
         let (audio_tx, audio_rx) = mpsc::channel::<AudioExtractionResult>();
+        let (import_tx, import_rx) = mpsc::channel::<AssetImportResult>();
 
         Self {
             world,
@@ -183,6 +192,8 @@ impl StrawberryApp {
             docking: DockingState::new(),
             audio_extraction_rx: audio_rx,
             audio_extraction_tx: audio_tx,
+            asset_import_rx: import_rx,
+            asset_import_tx: import_tx,
         }
     }
 
@@ -365,102 +376,173 @@ impl StrawberryApp {
 
     /// Show import media dialog
     ///
-    /// Opens a native file dialog that allows selecting multiple media files.
-    /// Imported files are:
-    /// 1. Added to the VideoAssetManager
-    /// 2. Queued for proxy generation (DNxHR LB for instant scrubbing)
-    /// 3. Available in MediaBrowser for drag-to-timeline
-    ///
-    /// Unlike open_file(), this does NOT auto-create timeline or add clips.
+    /// Opens a native file dialog that allows selecting MULTIPLE media files.
+    /// Each selected file is imported in a background thread to avoid blocking
+    /// the UI during FFmpeg probe (~200-500ms per file).
     fn show_import_dialog(&mut self) {
-        if let Some(path) = rfd::FileDialog::new()
+        if let Some(paths) = rfd::FileDialog::new()
             .set_title("Import Media")
             .add_filter("Video", &["mp4", "mov", "avi", "mkv", "webm", "mxf", "mts"])
             .add_filter("Audio", &["mp3", "wav", "aac", "flac", "ogg"])
             .add_filter("Image", &["png", "jpg", "jpeg", "tiff", "exr", "dpx"])
             .add_filter("All Files", &["*"])
-            .pick_file()
+            .pick_files()
         {
-            self.import_media(path);
+            for path in paths {
+                self.import_media(path);
+            }
         }
     }
 
-    /// Import media file to MediaBrowser (no timeline auto-creation)
+    /// Import media file to MediaBrowser (non-blocking, background thread).
     ///
-    /// This is the industry-standard import behavior:
-    /// - Asset is added to VideoAssetManager
-    /// - Proxy generation is queued
-    /// - Asset appears in MediaBrowser
-    /// - User explicitly adds to timeline via double-click or drag
+    /// Spawns a background thread that:
+    /// 1. Creates VideoService + loads metadata (blocking FFmpeg probe)
+    /// 2. Sends the result back via mpsc channel
+    ///
+    /// The main thread picks up results in `poll_asset_imports()` each frame
+    /// and registers the service in VideoAssetManager + AssetRegistry.
     fn import_media(&mut self, path: PathBuf) {
-        // Load asset into VideoAssetManager
-        let load_result = {
+        // Check if already loaded or already being loaded
+        {
             let mut asset_manager = self.world.resource_mut::<VideoAssetManager>();
-            asset_manager.load_asset(&path)
-        };
+            if !asset_manager.mark_import_pending(&path) {
+                tracing::info!("Skipping duplicate import for: {:?}", path);
+                return;
+            }
+        }
 
-        match load_result {
-            Ok(asset_uuid) => {
-                tracing::info!("Imported asset with UUID: {}", asset_uuid);
+        let uuid: uuid::Uuid = uuid::Uuid::new_v4();
+        let result_tx = self.asset_import_tx.clone();
+        let import_path: PathBuf = path.clone();
 
-                // Get metadata from the service we just loaded
-                let metadata = {
-                    let asset_manager = self.world.resource::<VideoAssetManager>();
-                    asset_manager
-                        .get_service(&asset_uuid)
-                        .and_then(|s| s.current_video().cloned())
+        tracing::info!(
+            "Starting background import for: {:?} (uuid: {})",
+            path.file_name().unwrap_or_default(),
+            &uuid.to_string()[..8]
+        );
+
+        // Spawn background thread for FFmpeg probe (200-500ms per file)
+        std::thread::spawn(move || {
+            // Create VideoService and load metadata (blocking FFmpeg probe)
+            let mut service: strawberry_video::service::VideoService =
+                match strawberry_video::service::VideoService::new() {
+                    Ok(s) => s,
+                    Err(e) => {
+                        let _ = result_tx.send(AssetImportResult {
+                            uuid,
+                            path: import_path,
+                            outcome: AssetImportOutcome::Failed {
+                                error: format!("VideoService init failed: {}", e),
+                            },
+                        });
+                        return;
+                    }
                 };
 
-                if let Some(loaded) = metadata {
-                    // Register asset in AssetRegistry (for Media Browser)
+            let metadata: strawberry_video::VideoMetadata = match service.load(&import_path) {
+                Ok(m) => m,
+                Err(e) => {
+                    let _ = result_tx.send(AssetImportResult {
+                        uuid,
+                        path: import_path,
+                        outcome: AssetImportOutcome::Failed {
+                            error: format!("FFmpeg probe failed: {}", e),
+                        },
+                    });
+                    return;
+                }
+            };
+
+            let _ = result_tx.send(AssetImportResult {
+                uuid,
+                path: import_path,
+                outcome: AssetImportOutcome::Success { service, metadata },
+            });
+        });
+    }
+
+    /// Poll for completed background asset imports (called each frame).
+    ///
+    /// Drains the import result channel and for each completed import:
+    /// 1. Registers the VideoService in VideoAssetManager
+    /// 2. Registers the asset in AssetRegistry (for Media Browser)
+    /// 3. Spawns audio extraction (non-blocking)
+    fn poll_asset_imports(&mut self) {
+        while let Ok(result) = self.asset_import_rx.try_recv() {
+            match result.outcome {
+                AssetImportOutcome::Success { service, metadata } => {
+                    let uuid: uuid::Uuid = result.uuid;
+                    let path: PathBuf = result.path;
+
+                    // Register pre-loaded service in VideoAssetManager
+                    {
+                        let mut asset_manager = self.world.resource_mut::<VideoAssetManager>();
+                        asset_manager.register_loaded_service(
+                            uuid,
+                            service,
+                            path.clone(),
+                            metadata.duration,
+                            metadata.frame_rate,
+                        );
+                    }
+
+                    // Register in AssetRegistry (for Media Browser display)
                     {
                         use strawberry_core::resources::{AssetMetadata, RegisteredAsset};
-                        let filename = path
+                        let filename: String = path
                             .file_name()
                             .map(|s| s.to_string_lossy().to_string())
                             .unwrap_or_else(|| "Untitled".to_string());
-                        let file_size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-                        let asset_metadata = AssetMetadata::video(
+                        let file_size: u64 = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                        let asset_metadata: AssetMetadata = AssetMetadata::video(
                             filename.clone(),
-                            loaded.metadata.duration,
-                            loaded.metadata.width,
-                            loaded.metadata.height,
-                            loaded.metadata.frame_rate,
-                            loaded.metadata.codec.clone(),
-                            loaded.metadata.frame_count,
+                            metadata.duration,
+                            metadata.width,
+                            metadata.height,
+                            metadata.frame_rate,
+                            metadata.codec.clone(),
+                            metadata.frame_count,
                             file_size,
                         );
-                        let registered_asset =
-                            RegisteredAsset::new(asset_uuid, path.clone(), asset_metadata);
+                        let registered_asset: RegisteredAsset =
+                            RegisteredAsset::new(uuid, path.clone(), asset_metadata);
                         let mut registry = self
                             .world
                             .resource_mut::<strawberry_core::resources::AssetRegistry>();
                         registry.register(registered_asset);
                     }
 
-                    // Spawn background audio extraction (non-blocking).
+                    // Spawn background audio extraction (non-blocking)
                     if self.world.contains_resource::<AudioMixerResource>() {
                         spawn_audio_extraction(
-                            asset_uuid,
+                            uuid,
                             path.clone(),
                             self.audio_extraction_tx.clone(),
                         );
                     }
 
                     tracing::info!(
-                        "Media imported to browser: {} ({}x{} @ {:.2}fps, {:.2}s)",
+                        "Background import complete: {} ({}x{} @ {:.2}fps, {:.2}s)",
                         path.file_name().unwrap_or_default().to_string_lossy(),
-                        loaded.metadata.width,
-                        loaded.metadata.height,
-                        loaded.metadata.frame_rate,
-                        loaded.metadata.duration.as_secs_f64()
+                        metadata.width,
+                        metadata.height,
+                        metadata.frame_rate,
+                        metadata.duration.as_secs_f64()
                     );
-                } else {
-                    tracing::error!("Asset loaded but no metadata available");
                 }
-            }
-            Err(e) => {
-                tracing::error!("Failed to import media: {}", e);
+                AssetImportOutcome::Failed { error } => {
+                    // Clear pending state so user can retry
+                    {
+                        let mut asset_manager = self.world.resource_mut::<VideoAssetManager>();
+                        asset_manager.clear_import_pending(&result.path);
+                    }
+                    tracing::error!(
+                        "Failed to import {:?}: {}",
+                        result.path.file_name().unwrap_or_default(),
+                        error
+                    );
+                }
             }
         }
     }
@@ -470,6 +552,9 @@ impl eframe::App for StrawberryApp {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         // Poll for completed audio extractions (non-blocking)
         self.poll_audio_extractions();
+
+        // Poll for completed background asset imports (non-blocking)
+        self.poll_asset_imports();
 
         // Sync proxy completions from VideoAssetManager → AssetRegistry
         self.sync_proxy_completions_to_registry();
@@ -593,16 +678,31 @@ impl eframe::App for StrawberryApp {
             }
         }
 
-        // Process GPU uploads
+        // Process GPU uploads and reclaim staging buffers
         if let Some(render_state) = frame.wgpu_render_state() {
             let texture_manager = self.world.resource::<TextureManager>();
-            let mut renderer = render_state.renderer.write();
 
+            // Advance LRU frame counter (was NEVER called — broke slot eviction)
+            texture_manager.advance_frame();
+
+            let mut renderer = render_state.renderer.write();
             texture_manager.process_uploads(
                 &render_state.device,
                 &render_state.queue,
                 &mut renderer,
             );
+
+            // NON-BLOCKING staging buffer reclamation.
+            //
+            // Each queue.write_texture() allocates a wgpu staging buffer that persists
+            // until device.poll() confirms the GPU finished the copy. Without this call,
+            // staging buffers are NEVER freed — accumulating to 44GB+ over 3 minutes of
+            // continuous playback, causing a fatal OOM crash.
+            //
+            // Maintain::Poll is non-blocking (<0.1ms) — it checks a GPU fence value and
+            // frees any completed staging buffers. This is what Unity/Unreal/Godot do.
+            // Maintain::Wait would block the CPU, killing parallelism.
+            render_state.device.poll(eframe::wgpu::Maintain::Poll);
         }
 
         // --- UI ---
@@ -948,6 +1048,34 @@ impl eframe::App for StrawberryApp {
             ctx.request_repaint();
         }
     }
+}
+
+// ============================================================================
+// ASYNC ASSET IMPORT
+// ============================================================================
+
+/// Result sent from a background asset import thread to the main thread.
+///
+/// The background thread runs FFmpeg probe to get metadata, then sends this
+/// result via an mpsc channel. The main thread polls the channel each frame.
+struct AssetImportResult {
+    /// Asset UUID assigned before spawning the thread
+    uuid: uuid::Uuid,
+    /// Original source file path
+    path: PathBuf,
+    /// Import outcome
+    outcome: AssetImportOutcome,
+}
+
+/// Possible outcomes of a background asset import
+enum AssetImportOutcome {
+    /// Successfully loaded VideoService with metadata
+    Success {
+        service: strawberry_video::service::VideoService,
+        metadata: strawberry_video::VideoMetadata,
+    },
+    /// Import failed
+    Failed { error: String },
 }
 
 // ============================================================================

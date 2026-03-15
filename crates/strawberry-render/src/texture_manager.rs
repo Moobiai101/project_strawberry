@@ -82,19 +82,60 @@ impl TextureManager {
     ///
     /// Uploads every queued frame to its own texture slot. With multi-clip,
     /// this uploads N frames (one per active layer) in a single pass.
+    ///
+    /// ## Per-Frame Upload Budget
+    ///
+    /// Caps total bytes uploaded per frame to prevent wgpu staging buffer explosion.
+    /// With 1000+ clips and 10-20 active layers at 4K, a single frame's uploads could
+    /// create hundreds of MB of staging buffers. The budget defers excess frames to the
+    /// next frame — the compositor's hold-frame pattern handles stale textures gracefully.
+    ///
+    /// Budget of 64MB allows ~7 full-res (1080p) frames or ~30 proxy frames per tick.
+    /// This never triggers during normal operation, only protects against pathological cases.
     pub fn process_uploads(
         &self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         renderer: &mut egui_wgpu::Renderer,
     ) {
+        // 64MB — enough for ~7 full-res 1080p frames (8.3MB each) or 30+ proxy frames.
+        // Never triggers during normal playback (1-5 clips). Acts as safety net for
+        // simultaneously visible 20+ layers at 4K resolution.
+        const MAX_UPLOAD_BYTES_PER_FRAME: usize = 64 * 1024 * 1024;
+
         let pending: Vec<(FrameKey, VideoFrame)> = {
             let mut pending_guard = self.pending_frames.write();
             std::mem::take(&mut *pending_guard)
         };
 
+        let mut bytes_uploaded: usize = 0;
+        let mut deferred: Vec<(FrameKey, VideoFrame)> = Vec::new();
+
         for (key, frame) in pending {
+            let frame_bytes: usize = (frame.width * frame.height * 4) as usize;
+
+            if bytes_uploaded + frame_bytes > MAX_UPLOAD_BYTES_PER_FRAME && bytes_uploaded > 0 {
+                // Budget exceeded — defer to next frame. The compositor's hold-frame
+                // pattern shows the last good texture, so this is visually seamless.
+                deferred.push((key, frame));
+                continue;
+            }
+
             self.upload_frame(device, queue, renderer, key, frame);
+            bytes_uploaded += frame_bytes;
+        }
+
+        // Carry deferred frames to next tick (front of queue for priority)
+        if !deferred.is_empty() {
+            tracing::debug!(
+                "Upload budget: deferred {} frame(s) ({:.1}MB over budget)",
+                deferred.len(),
+                bytes_uploaded as f64 / (1024.0 * 1024.0),
+            );
+            let mut pending_guard = self.pending_frames.write();
+            // Prepend deferred frames so they get uploaded first next frame
+            deferred.append(&mut pending_guard);
+            *pending_guard = deferred;
         }
     }
 

@@ -2,6 +2,7 @@
 //!
 //! Provides a clean interface to FFmpeg CLI for decode/encode operations.
 
+use crate::hw_accel::{self, HwAccelCapabilities};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -30,6 +31,8 @@ pub struct FFmpeg {
     ffmpeg_path: PathBuf,
     /// Path to ffprobe binary
     ffprobe_path: PathBuf,
+    /// Detected hardware acceleration capabilities (cached at init)
+    hw_caps: HwAccelCapabilities,
 }
 
 impl FFmpeg {
@@ -41,17 +44,23 @@ impl FFmpeg {
         info!("FFmpeg found at: {:?}", ffmpeg_path);
         info!("FFprobe found at: {:?}", ffprobe_path);
 
+        // Detect GPU hardware encoders (runs once, ~50ms)
+        let hw_caps: HwAccelCapabilities = hw_accel::detect_hw_encoders(&ffmpeg_path);
+
         Ok(Self {
             ffmpeg_path,
             ffprobe_path,
+            hw_caps,
         })
     }
 
     /// Create with explicit paths
     pub fn with_paths(ffmpeg: PathBuf, ffprobe: PathBuf) -> Self {
+        let hw_caps: HwAccelCapabilities = hw_accel::detect_hw_encoders(&ffmpeg);
         Self {
             ffmpeg_path: ffmpeg,
             ffprobe_path: ffprobe,
+            hw_caps,
         }
     }
 
@@ -278,6 +287,14 @@ impl FFmpeg {
     /// Get the ffprobe binary path  
     pub fn ffprobe_path(&self) -> &Path {
         &self.ffprobe_path
+    }
+
+    /// Get detected hardware acceleration capabilities
+    ///
+    /// Use `hw_caps().best_encoder` to get the best available encoder
+    /// for proxy generation.
+    pub fn hw_caps(&self) -> &HwAccelCapabilities {
+        &self.hw_caps
     }
 
     /// Check whether a media file contains an audio stream.

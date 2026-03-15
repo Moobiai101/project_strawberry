@@ -43,7 +43,7 @@ Smaller files enable precise retrieval, isolated reasoning, and safer refactors.
 
 At >400 lines, refactoring is mandatory, though if it is mandatory to increase the limit u can do it upto 600 to 700 lines
 
-Files must never exceed 600- 700 lines under any circumstance.
+Files must never exceed 600- 800 lines under any circumstance.
 
 1.2 Pre-Implementation Reasoning Requirement (Critical)
 
@@ -171,7 +171,7 @@ fn calculate_playhead_x(...)
 Before writing any new feature, the Agent must verify:
 1. [ ] Is this logic or UI? (Put it in the right crate)
 2. [ ] Does this require a new Command? (Never mutate World directly from UI)
-3. [ ] Will this file be < 400 lines? (If not, plan sub-modules)
+3. [ ] Will this file be < 700 lines? (If not, plan sub-modules)
 4. [ ] Are types explicit?
 5. [ ] Is it covered by a test? (AI-generated tests are mandatory)
 

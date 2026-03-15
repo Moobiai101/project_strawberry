@@ -44,8 +44,8 @@ pub use project_settings::{AspectRatioPreset, ProjectSettings};
 pub use proxy_progress::{AssetProxyProgress, ProxyProgress};
 pub use thumbnail_cache::{LoadedThumbnails, ThumbnailTexture, ThumbnailTextureCache};
 pub use timeline_utils::{
-    calculate_track_content_duration, calculate_track_end_time, count_clips_on_track,
-    get_clips_on_track_sorted,
+    calculate_timeline_total_duration, calculate_track_content_duration, calculate_track_end_time,
+    count_clips_on_track, get_clips_on_track_sorted,
 };
 pub use user_settings::{ProxyQuality, ProxyResolution, ProxySettings, UiSettings, UserSettings};
 pub use viewport_state::TimelineViewport;

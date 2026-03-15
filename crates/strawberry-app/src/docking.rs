@@ -1075,10 +1075,18 @@ impl<'a> TreeBehavior<'a> {
         let timeline_entity = active_timeline.and_then(|a| a.get());
 
         let (timeline_name, duration) = if let Some(entity) = timeline_entity {
+            // Read the dynamic timeline duration from PlaybackClock (synced every frame
+            // by timeline_duration_sync_system from actual clip endpoints).
+            let clock_duration: Duration = self
+                .world
+                .get_resource::<strawberry_core::systems::PlaybackClock>()
+                .map(|clock| clock.timeline_duration)
+                .unwrap_or(Duration::from_secs(60));
+
             self.world
                 .get::<Timeline>(entity)
-                .map(|t| (t.name.clone(), Duration::from_secs(60))) // TODO: compute from clips
-                .unwrap_or(("No Timeline".to_string(), Duration::from_secs(60)))
+                .map(|t| (t.name.clone(), clock_duration))
+                .unwrap_or(("No Timeline".to_string(), clock_duration))
         } else {
             ("No Timeline".to_string(), Duration::from_secs(60))
         };

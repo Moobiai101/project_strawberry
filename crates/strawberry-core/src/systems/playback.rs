@@ -97,6 +97,61 @@ pub fn playhead_advance_system(mut playhead: ResMut<Playhead>, mut clock: ResMut
     }
 }
 
+/// System that dynamically syncs PlaybackClock::timeline_duration from actual
+/// clip endpoints on the active timeline.
+///
+/// ## Why this system exists
+///
+/// `PlaybackClock::timeline_duration` was previously only set on file open and
+/// defaulted to 60 seconds. Any clips added via Media Browser, splits, trims,
+/// or undo/redo would NOT update it, causing playback to hard-stop at 60s.
+///
+/// This system recomputes the duration every frame by traversing
+/// Timeline → Tracks → Clips and finding the maximum endpoint. This is the
+/// production-grade approach used by real NLEs (Premiere, Resolve) — it's
+/// correct by construction and O(total_clips) cost is negligible.
+///
+/// ## Ordering
+///
+/// Must run BEFORE `playhead_advance_system` so the duration is current
+/// when the playhead checks its bounds.
+///
+/// ## Why exclusive system
+///
+/// We need both read access to the ECS hierarchy (ActiveTimeline, Children,
+/// Track, Clip) and write access to PlaybackClock. Bevy's normal system
+/// params can't mix `&World` with `ResMut<T>`, so we use an exclusive system
+/// that takes `&mut World` and accesses resources manually.
+pub fn timeline_duration_sync_system(world: &mut World) {
+    // Read active timeline entity
+    let timeline_entity: Option<bevy_ecs::entity::Entity> = world
+        .get_resource::<crate::components::ActiveTimeline>()
+        .and_then(|at| at.get());
+
+    let Some(timeline_entity) = timeline_entity else {
+        // No active timeline — leave duration as-is (default or last-set)
+        return;
+    };
+
+    // Compute duration from clip endpoints (read-only traversal)
+    let computed_duration: Duration =
+        crate::resources::calculate_timeline_total_duration(world, timeline_entity);
+
+    // Update PlaybackClock if duration changed
+    if computed_duration > Duration::ZERO {
+        let clock = world.resource_mut::<PlaybackClock>();
+        if computed_duration != clock.timeline_duration {
+            tracing::debug!(
+                "Timeline duration synced: {:.2}s → {:.2}s",
+                clock.timeline_duration.as_secs_f64(),
+                computed_duration.as_secs_f64(),
+            );
+            // Must reborrow mutably after the comparison
+            world.resource_mut::<PlaybackClock>().timeline_duration = computed_duration;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
