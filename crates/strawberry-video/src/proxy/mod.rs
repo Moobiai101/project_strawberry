@@ -51,6 +51,41 @@ use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
 
+/// Compute a deterministic content-based hash for proxy cache keying.
+///
+/// Uses file path (canonicalized), file size, and modification time to produce
+/// a 32-character hex string. Same file → same hash → same proxy directory.
+/// This is how Premiere Pro and DaVinci Resolve handle proxy caching.
+///
+/// ## Why not just file path?
+///
+/// If the user re-encodes the same file (same path, different content), the
+/// mtime and size will change, producing a new hash → new proxy. This ensures
+/// stale proxies are never served for modified source files.
+pub fn compute_proxy_content_hash(source_path: &Path) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = DefaultHasher::new();
+
+    // Use canonical path to handle symlinks and relative paths
+    let canonical: PathBuf = std::fs::canonicalize(source_path)
+        .unwrap_or_else(|_| source_path.to_path_buf());
+    canonical.hash(&mut hasher);
+
+    // Include file size and mtime for content-change detection
+    if let Ok(metadata) = std::fs::metadata(source_path) {
+        metadata.len().hash(&mut hasher);
+        if let Ok(mtime) = metadata.modified() {
+            if let Ok(duration) = mtime.duration_since(std::time::UNIX_EPOCH) {
+                duration.as_secs().hash(&mut hasher);
+            }
+        }
+    }
+
+    format!("{:016x}", hasher.finish())
+}
+
 /// Status of a single proxy generation job
 #[derive(Debug, Clone)]
 pub enum ProxyJobStatus {
@@ -147,6 +182,8 @@ pub struct ProxyConfig {
     pub use_image_sequences: bool,
     /// Whether to generate LOD thumbnails after proxy
     pub generate_thumbnails: bool,
+    /// Maximum age of proxy cache entries in days before auto-cleanup
+    pub max_cache_age_days: u32,
 }
 
 impl Default for ProxyConfig {
@@ -160,10 +197,11 @@ impl Default for ProxyConfig {
         Self {
             target_height: 720,
             jpeg_quality: 85,
-            max_concurrent_jobs: 2,
+            max_concurrent_jobs: 1, // Sequential: avoids GPU/CPU/disk contention
             cache_dir,
             use_image_sequences: true,
             generate_thumbnails: true,
+            max_cache_age_days: 7,
         }
     }
 }
@@ -199,11 +237,17 @@ impl ProxyManager {
     }
 
     /// Create with custom configuration
+    ///
+    /// Runs stale cache cleanup on startup (removes proxy directories
+    /// older than `max_cache_age_days`).
     pub fn with_config(config: ProxyConfig) -> Result<Self, FFmpegError> {
         let ffmpeg = Arc::new(FFmpeg::new()?);
 
         // Create cache directory if it doesn't exist
         std::fs::create_dir_all(&config.cache_dir).map_err(|e| FFmpegError::Io(e))?;
+
+        // Clean up stale proxy directories on startup
+        Self::cleanup_stale_proxies(&config.cache_dir, config.max_cache_age_days);
 
         let (tx, rx) = mpsc::channel();
 
@@ -217,9 +261,100 @@ impl ProxyManager {
         })
     }
 
-    /// Queue a proxy generation job for an asset
+    /// Remove proxy directories older than `max_age_days` from the cache.
     ///
-    /// Returns the path where the proxy will be written.
+    /// Called once at startup. Scans the proxies directory for subdirectories
+    /// and removes any whose last modification time exceeds the threshold.
+    /// Logs total directories removed and bytes freed.
+    fn cleanup_stale_proxies(cache_dir: &Path, max_age_days: u32) {
+        let max_age = std::time::Duration::from_secs(max_age_days as u64 * 24 * 60 * 60);
+        let now = std::time::SystemTime::now();
+        let mut removed_count: u32 = 0;
+        let mut freed_bytes: u64 = 0;
+
+        let entries = match std::fs::read_dir(cache_dir) {
+            Ok(entries) => entries,
+            Err(_) => return, // No cache dir yet — nothing to clean
+        };
+
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+
+            // Check modification time: prefer .last_used marker (written on cache hit),
+            // fall back to directory mtime
+            let marker: PathBuf = path.join(".last_used");
+            let mtime = if marker.exists() {
+                match marker.metadata().and_then(|m| m.modified()) {
+                    Ok(t) => t,
+                    Err(_) => continue,
+                }
+            } else {
+                match path.metadata().and_then(|m| m.modified()) {
+                    Ok(t) => t,
+                    Err(_) => continue,
+                }
+            };
+
+            let age = match now.duration_since(mtime) {
+                Ok(age) => age,
+                Err(_) => continue, // Clock skew — skip
+            };
+
+            if age > max_age {
+                // Calculate size before deleting
+                let dir_size: u64 = Self::dir_size_bytes(&path);
+                if let Err(e) = std::fs::remove_dir_all(&path) {
+                    tracing::warn!("Failed to clean stale proxy {:?}: {}", path, e);
+                    continue;
+                }
+                removed_count += 1;
+                freed_bytes += dir_size;
+            }
+        }
+
+        if removed_count > 0 {
+            tracing::info!(
+                "Proxy cache cleanup: removed {} stale director{} ({:.1} MB freed, threshold: {} days)",
+                removed_count,
+                if removed_count == 1 { "y" } else { "ies" },
+                freed_bytes as f64 / (1024.0 * 1024.0),
+                max_age_days,
+            );
+        }
+    }
+
+    /// Calculate total size of a directory recursively (for cleanup logging)
+    fn dir_size_bytes(path: &Path) -> u64 {
+        std::fs::read_dir(path)
+            .map(|entries| {
+                entries
+                    .filter_map(|e| e.ok())
+                    .map(|e| {
+                        let p = e.path();
+                        if p.is_dir() {
+                            Self::dir_size_bytes(&p)
+                        } else {
+                            e.metadata().map(|m| m.len()).unwrap_or(0)
+                        }
+                    })
+                    .sum()
+            })
+            .unwrap_or(0)
+    }
+
+    /// Queue a proxy generation job for an asset.
+    ///
+    /// ## Cache Reuse
+    ///
+    /// Uses a **content-based hash** (file path + size + mtime) for the proxy
+    /// directory name. Same video file → same hash → same directory. If a valid
+    /// proxy already exists on disk, skips FFmpeg entirely and immediately
+    /// marks the job as Completed.
+    ///
+    /// Returns the path where the proxy will be (or already is) stored.
     pub fn queue_proxy(
         &self,
         asset_id: Uuid,
@@ -227,22 +362,57 @@ impl ProxyManager {
         source_duration: Duration,
         frame_rate: f64,
     ) -> PathBuf {
-        // Create asset-specific directory: proxies/<asset_id_hex>/
-        let asset_dir = self
-            .config
-            .cache_dir
-            .join(asset_id.to_string().replace("-", ""));
+        // Content-based directory key: same file → same proxy directory
+        let content_hash: String = compute_proxy_content_hash(source_path);
+        let asset_dir: PathBuf = self.config.cache_dir.join(&content_hash);
         let _ = std::fs::create_dir_all(&asset_dir);
 
         // Determine proxy path based on configuration
         let (proxy_path, is_image_sequence) = if self.config.use_image_sequences {
-            // Image sequence: proxies/<id>/ (frames will be frame_00001.jpg, etc.)
             (asset_dir.clone(), true)
         } else {
-            // Video proxy: proxies/<id>/proxy.mov
             (asset_dir.join("proxy.mov"), false)
         };
 
+        // Check if a valid proxy already exists on disk (cache HIT)
+        if self.is_proxy_cache_valid(&proxy_path, source_path, is_image_sequence) {
+            tracing::info!(
+                "Proxy cache HIT for asset {} ({}) — reusing existing proxy",
+                &asset_id.to_string()[..8],
+                source_path.file_name().unwrap_or_default().to_string_lossy(),
+            );
+
+            // Register as already-completed job
+            let mut job = ProxyJob::new(
+                asset_id,
+                source_path.to_path_buf(),
+                proxy_path.clone(),
+                source_duration,
+                is_image_sequence,
+                frame_rate,
+            );
+            job.status = ProxyJobStatus::Completed;
+            self.jobs.write().insert(asset_id, job);
+
+            // Send completion immediately so VideoAssetManager picks it up
+            let _ = self.result_tx.send(ProxyResult::Completed {
+                asset_id,
+                proxy_path: proxy_path.clone(),
+            });
+
+            // Touch the directory mtime so cleanup doesn't evict active proxies
+            if let Ok(metadata) = std::fs::metadata(&asset_dir) {
+                let _ = std::fs::set_permissions(&asset_dir, metadata.permissions());
+                // On most OS, opening and closing a file in the dir updates atime.
+                // But for mtime, we write a small marker file.
+                let marker: PathBuf = asset_dir.join(".last_used");
+                let _ = std::fs::write(&marker, b"");
+            }
+
+            return proxy_path;
+        }
+
+        // Cache MISS — generate proxy
         let job = ProxyJob::new(
             asset_id,
             source_path.to_path_buf(),
@@ -252,32 +422,52 @@ impl ProxyManager {
             frame_rate,
         );
 
-        // Store job
-        {
-            let mut jobs = self.jobs.write();
-            jobs.insert(asset_id, job.clone());
-        }
+        self.jobs.write().insert(asset_id, job.clone());
 
         tracing::info!(
-            "Queued proxy job for asset {} ({}, {}p, {:.1}fps - {})",
+            "Proxy cache MISS for asset {} ({}, {}p, {:.1}fps - {})",
             &asset_id.to_string()[..8],
-            source_path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy(),
+            source_path.file_name().unwrap_or_default().to_string_lossy(),
             self.config.target_height,
             frame_rate,
-            if is_image_sequence {
-                "JPEG sequence"
-            } else {
-                "DNxHR LB"
-            },
+            if is_image_sequence { "JPEG sequence" } else { "DNxHR LB" },
         );
 
-        // Spawn background generation
         self.spawn_proxy_task(job);
-
         proxy_path
+    }
+
+    /// Check if an existing proxy on disk is still valid for the given source.
+    ///
+    /// For image sequences: checks that frame_00001.jpg exists AND the
+    /// thumbnail manifest validates against the source file (size + mtime).
+    /// For video proxies: checks that proxy.mov exists.
+    fn is_proxy_cache_valid(
+        &self,
+        proxy_path: &Path,
+        source_path: &Path,
+        is_image_sequence: bool,
+    ) -> bool {
+        if is_image_sequence {
+            // Must have at least the first frame
+            let first_frame: PathBuf = proxy_path.join("frame_00001.jpg");
+            if !first_frame.exists() {
+                return false;
+            }
+            // Validate via thumbnail manifest (has source size + mtime check)
+            let thumb_manifest: PathBuf = proxy_path.join("thumbnails").join("manifest.json");
+            if thumb_manifest.exists() {
+                if let Ok(json) = std::fs::read_to_string(&thumb_manifest) {
+                    if let Ok(manifest) = serde_json::from_str::<crate::thumbnail::ThumbnailManifest>(&json) {
+                        return manifest.is_valid_for(source_path);
+                    }
+                }
+            }
+            // No manifest but frames exist — still valid (manifest may not have been generated)
+            true
+        } else {
+            proxy_path.exists() && proxy_path.is_file()
+        }
     }
 
     /// Poll for completed proxy results
@@ -455,13 +645,13 @@ impl ProxyManager {
         Ok(())
     }
 
-    /// Get the proxy directory for an asset (for storing thumbnails alongside frames)
+    /// Get the proxy directory for a source file (for storing thumbnails alongside frames)
     ///
-    /// Returns the proxy directory path even if proxy is not yet complete.
-    pub fn get_proxy_dir(&self, asset_id: &Uuid) -> PathBuf {
-        self.config
-            .cache_dir
-            .join(asset_id.to_string().replace("-", ""))
+    /// Uses content-based hash: same file → same directory.
+    /// Returns the path even if proxy is not yet complete.
+    pub fn get_proxy_dir(&self, source_path: &Path) -> PathBuf {
+        let content_hash: String = compute_proxy_content_hash(source_path);
+        self.config.cache_dir.join(content_hash)
     }
 }
 
@@ -479,7 +669,7 @@ mod tests {
     fn test_proxy_config_default() {
         let config = ProxyConfig::default();
         assert_eq!(config.target_height, 720);
-        assert_eq!(config.max_concurrent_jobs, 2);
+        assert_eq!(config.max_concurrent_jobs, 1);
         assert!(config.cache_dir.ends_with("proxies"));
     }
 

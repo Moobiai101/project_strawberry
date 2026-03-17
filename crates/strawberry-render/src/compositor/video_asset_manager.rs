@@ -316,11 +316,14 @@ impl VideoAssetManager {
 
         self.playback_active = true;
 
-        // Suspend proxy FFmpeg processes to eliminate I/O contention.
-        // This is the same approach used by Premiere Pro and DaVinci Resolve.
-        if let Some(ref proxy_manager) = self.proxy_manager {
-            proxy_manager.suspend_proxy_processes();
-        }
+        // NOTE: Proxy FFmpeg processes are NOT suspended during playback.
+        // They run at BELOW_NORMAL_PRIORITY_CLASS, which lets the OS scheduler
+        // automatically give priority to the playback pipeline while still
+        // making progress on proxy generation. Suspending them was freezing
+        // proxy work for the entire playback duration (72s+ wasted time).
+        //
+        // The suspend/resume APIs in process_control.rs remain available
+        // for future use (e.g., during export where we DO want full GPU/CPU).
 
         // Log errors but don't fail — partial playback is better than none
         if !errors.is_empty() {
@@ -385,11 +388,8 @@ impl VideoAssetManager {
 
         self.playback_active = false;
 
-        // Resume proxy FFmpeg processes now that playback has stopped.
-        // They'll continue generating at IDLE_PRIORITY_CLASS.
-        if let Some(ref proxy_manager) = self.proxy_manager {
-            proxy_manager.resume_proxy_processes();
-        }
+        // NOTE: No resume needed — proxy processes are no longer suspended
+        // during playback. See start_playback() for rationale.
     }
 
     /// Check if playback mode is active

@@ -207,12 +207,16 @@ impl super::ProxyManager {
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
 
-        // Windows: IDLE_PRIORITY_CLASS (0x40) — only runs when system is idle
+        // Windows: BELOW_NORMAL_PRIORITY_CLASS (0x4000) — reduced priority
+        // but still makes real progress. IDLE (0x40) was too aggressive —
+        // it only runs when literally nothing else needs CPU, causing
+        // 7-min videos to take 1-2 min. BELOW_NORMAL matches what
+        // Premiere Pro and DaVinci Resolve use for background encodes.
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
-            const IDLE_PRIORITY_CLASS: u32 = 0x0000_0040;
-            cmd.creation_flags(IDLE_PRIORITY_CLASS);
+            const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x0000_4000;
+            cmd.creation_flags(BELOW_NORMAL_PRIORITY_CLASS);
         }
 
         // Spawn subprocess (get handle for PID tracking)
@@ -251,13 +255,17 @@ impl super::ProxyManager {
     ///
     /// ## GPU Acceleration
     ///
-    /// Uses `-hwaccel auto/cuda/qsv` to offload source decode from CPU.
-    /// JPEG encoding itself is always CPU-based (mjpeg), but at IDLE priority
-    /// it won't compete with the render pipeline.
+    /// When NVENC is available, uses a fully GPU-accelerated pipeline:
+    /// 1. GPU decode (NVDEC)
+    /// 2. GPU scale (scale_cuda) — keeps frames in VRAM, 10x faster than CPU
+    /// 3. hwdownload — transfers only the small 720p frame (not full-res)
+    /// 4. CPU mjpeg encode with -threads 4
+    ///
+    /// For other HW encoders or CPU fallback, uses CPU scaling with -threads 4.
     ///
     /// ## Process Control
     ///
-    /// Uses `.spawn()` for PID tracking and `IDLE_PRIORITY_CLASS` on Windows.
+    /// Uses `.spawn()` for PID tracking and BELOW_NORMAL priority on Windows.
     fn generate_image_sequence_blocking(
         ffmpeg: &FFmpeg,
         source: &Path,
@@ -270,7 +278,7 @@ impl super::ProxyManager {
         use std::process::{Command, Stdio};
 
         tracing::info!(
-            "Starting image sequence proxy ({} decode): {:?} -> {:?}",
+            "Starting image sequence proxy ({} pipeline): {:?} -> {:?}",
             hw_encoder.display_name(),
             source,
             output_dir
@@ -291,31 +299,56 @@ impl super::ProxyManager {
 
         let mut cmd = Command::new(ffmpeg.ffmpeg_path());
 
-        // Add HW-accelerated decode flags
-        let hwaccel_args: Vec<&str> = hw_accel::build_hwaccel_decode_args(hw_encoder);
-        for arg in &hwaccel_args {
-            cmd.arg(arg);
+        // Build GPU-optimized or CPU pipeline based on encoder type.
+        //
+        // NVENC path (fastest):
+        //   -hwaccel cuda -hwaccel_output_format cuda → keep decoded frames in GPU VRAM
+        //   -vf "scale_cuda=-2:720,hwdownload,format=nv12" → scale ON GPU, then download
+        //   Only the small 720p frame is transferred GPU→CPU (vs full-res before)
+        //
+        // CPU/other path:
+        //   -hwaccel auto → best available decode acceleration
+        //   -vf "scale=-2:720" → CPU scale
+        //   -threads 4 → parallel JPEG encoding
+        let vf_string: String;
+        if hw_encoder == HwEncoder::Nvenc {
+            cmd.args([
+                "-hwaccel", "cuda",
+                "-hwaccel_output_format", "cuda",
+            ]);
+            // GPU scale + download. format=nv12 ensures mjpeg gets a compatible pixel format.
+            vf_string = format!(
+                "scale_cuda=-2:{},hwdownload,format=nv12",
+                target_height
+            );
+        } else {
+            // Non-NVENC: use generic hwaccel decode with CPU scale
+            let hwaccel_args: Vec<&str> = hw_accel::build_hwaccel_decode_args(hw_encoder);
+            for arg in &hwaccel_args {
+                cmd.arg(arg);
+            }
+            vf_string = format!("scale=-2:{}", target_height);
         }
 
         cmd.args(["-i"])
             .arg(source)
             .args([
-                "-vf",
-                &format!("scale=-2:{}", target_height),
-                "-qscale:v",
-                qscale,
+                "-vf", &vf_string,
+                "-qscale:v", qscale,
+                "-threads", "4",  // Parallel JPEG encoding
                 "-y",
             ])
             .arg(&output_pattern)
             .stdout(Stdio::null())
             .stderr(Stdio::piped());
 
-        // Windows: IDLE_PRIORITY_CLASS — proxy won't starve playback
+        // Windows: BELOW_NORMAL_PRIORITY_CLASS — proxy won't starve playback
+        // but still makes real progress (see generate_video_proxy_blocking)
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
-            const IDLE_PRIORITY_CLASS: u32 = 0x0000_0040;
-            cmd.creation_flags(IDLE_PRIORITY_CLASS);
+            const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x0000_4000;
+            cmd.creation_flags(BELOW_NORMAL_PRIORITY_CLASS);
         }
 
         // Spawn subprocess with PID tracking

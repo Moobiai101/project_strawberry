@@ -1656,9 +1656,24 @@ impl<'a> TreeBehavior<'a> {
             .join("strawberry")
             .join("proxies");
 
+        // Get asset registry to resolve source paths for content-hash proxy directories
+        let asset_registry = self
+            .world
+            .get_resource::<strawberry_core::resources::AssetRegistry>();
+
         for asset_id in &visible_asset_uuids {
-            // Build proxy directory path (matches ProxyManager format)
-            let proxy_dir = cache_dir.join(asset_id.to_string().replace("-", ""));
+            // Resolve proxy directory via content hash (matches ProxyManager storage)
+            // Asset UUID → source_path (from registry) → content_hash → proxy directory
+            let proxy_dir = if let Some(registry) = asset_registry {
+                if let Some(asset) = registry.get(asset_id) {
+                    let content_hash = strawberry_video::proxy::compute_proxy_content_hash(&asset.source_path);
+                    cache_dir.join(content_hash)
+                } else {
+                    continue; // Asset not in registry — skip
+                }
+            } else {
+                continue; // No registry — skip
+            };
             let thumbnails_dir = proxy_dir.join("thumbnails");
 
             if !thumbnails_dir.exists() {
