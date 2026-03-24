@@ -6,6 +6,9 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
+# Core types (WaveformCache, WaveformPeaks)
+strawberry-core = { path = "../strawberry-core" }
+
 # Audio I/O
 cpal.workspace = true
 symphonia.workspace = true
@@ -14,6 +17,7 @@ dasp.workspace = true
 fundsp.workspace = true
 ringbuf.workspace = true
 kira.workspace = true
+ebur128 = "0.1"
 
 # IDs
 uuid.workspace = true

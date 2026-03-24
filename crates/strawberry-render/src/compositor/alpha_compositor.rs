@@ -66,7 +66,7 @@ impl AlphaCompositor {
         let pixel_count = (width * height) as usize;
 
         // Start with the bottom frame as the accumulator
-        let mut result_data: Vec<u8> = base.data.clone();
+        let mut result_data: Vec<u8> = base.data.as_slice().to_vec();
 
         // Blend each subsequent frame on top
         for fg_frame in frames.iter().skip(1) {
@@ -82,16 +82,16 @@ impl AlphaCompositor {
                 continue;
             }
 
-            Self::blend_layer_onto(&mut result_data, &fg_frame.data, pixel_count);
+            Self::blend_layer_onto(&mut result_data, fg_frame.data.as_slice(), pixel_count);
         }
 
-        VideoFrame {
-            data: result_data,
+        VideoFrame::new(
+            result_data,
             width,
             height,
-            timestamp: frames.last().map(|f| f.timestamp).unwrap_or(Duration::ZERO),
-            frame_number: frames.last().map(|f| f.frame_number).unwrap_or(0),
-        }
+            frames.last().map(|f| f.timestamp).unwrap_or(Duration::ZERO),
+            frames.last().map(|f| f.frame_number).unwrap_or(0),
+        )
     }
 
     /// Blend a foreground layer onto a background buffer using alpha-over.
@@ -156,13 +156,13 @@ mod tests {
         for _ in 0..pixel_count {
             data.extend_from_slice(&[r, g, b, a]);
         }
-        Arc::new(VideoFrame {
+        Arc::new(VideoFrame::new(
             data,
             width,
             height,
-            timestamp: Duration::ZERO,
-            frame_number: 0,
-        })
+            Duration::ZERO,
+            0,
+        ))
     }
 
     #[test]
@@ -176,7 +176,7 @@ mod tests {
         let frame = create_test_frame(2, 2, 255, 0, 0, 255);
         let result = AlphaCompositor::composite(&[frame.clone()]);
         assert!(result.is_some());
-        assert_eq!(result.unwrap().data, frame.data);
+        assert_eq!(result.unwrap().data.as_slice(), frame.data.as_slice());
     }
 
     #[test]
@@ -188,10 +188,10 @@ mod tests {
         let result = AlphaCompositor::composite(&[bg, fg]).unwrap();
 
         // First pixel should be blue
-        assert_eq!(result.data[0], 0); // R
-        assert_eq!(result.data[1], 0); // G
-        assert_eq!(result.data[2], 255); // B
-        assert_eq!(result.data[3], 255); // A
+        assert_eq!(result.data.as_slice()[0], 0); // R
+        assert_eq!(result.data.as_slice()[1], 0); // G
+        assert_eq!(result.data.as_slice()[2], 255); // B
+        assert_eq!(result.data.as_slice()[3], 255); // A
     }
 
     #[test]
@@ -203,9 +203,9 @@ mod tests {
         let result = AlphaCompositor::composite(&[bg, fg]).unwrap();
 
         // Should still be red
-        assert_eq!(result.data[0], 255); // R
-        assert_eq!(result.data[1], 0); // G
-        assert_eq!(result.data[2], 0); // B
+        assert_eq!(result.data.as_slice()[0], 255); // R
+        assert_eq!(result.data.as_slice()[1], 0); // G
+        assert_eq!(result.data.as_slice()[2], 0); // B
     }
 
     #[test]
@@ -218,9 +218,9 @@ mod tests {
 
         // Red should be blended: 0 * 0.5 + 255 * 0.5 ≈ 127
         // Blue should be blended: 255 * 0.5 + 0 * 0.5 ≈ 127
-        assert!(result.data[0] > 100 && result.data[0] < 150); // R ~ 127
-        assert_eq!(result.data[1], 0); // G = 0
-        assert!(result.data[2] > 100 && result.data[2] < 150); // B ~ 127
+        assert!(result.data.as_slice()[0] > 100 && result.data.as_slice()[0] < 150); // R ~ 127
+        assert_eq!(result.data.as_slice()[1], 0); // G = 0
+        assert!(result.data.as_slice()[2] > 100 && result.data.as_slice()[2] < 150); // B ~ 127
     }
 
     #[test]

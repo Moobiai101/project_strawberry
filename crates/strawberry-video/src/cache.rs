@@ -57,7 +57,7 @@ impl FrameCache {
 
     /// Insert a frame into the cache
     pub fn insert(&self, key: FrameKey, frame: Arc<VideoFrame>) -> Arc<VideoFrame> {
-        let frame_size = frame.data.len();
+        let frame_size: usize = frame.data.len();
 
         // Evict if necessary
         while *self.current_size.read() + frame_size > self.max_size_bytes {
@@ -97,7 +97,7 @@ impl FrameCache {
         let mut cache = self.cache.write();
         if let Some(key) = cache.keys().next().cloned() {
             if let Some(frame) = cache.remove(&key) {
-                *self.current_size.write() -= frame.data.len();
+                *self.current_size.write() -= frame.data.len();  // FrameData::len()
                 return true;
             }
         }

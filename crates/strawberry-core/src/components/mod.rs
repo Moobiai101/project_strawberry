@@ -5,6 +5,12 @@
 pub mod timeline;
 pub use timeline::*;
 
+pub mod audio;
+pub use audio::*;
+
+pub mod waveform;
+pub use waveform::*;
+
 use bevy_ecs::component::Component;
 use chrono::{DateTime, Utc};
 use glam::{UVec2, Vec2};

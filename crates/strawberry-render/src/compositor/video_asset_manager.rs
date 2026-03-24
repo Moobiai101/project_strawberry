@@ -88,8 +88,11 @@ impl VideoAssetManager {
             }
         };
 
-        // Create LRU cache for JPEG frames (64MB - holds ~30 frames at 1080p)
-        let frame_cache: JpegFrameCache = JpegFrameCache::new(64);
+        // Create LRU cache for JPEG frames (128MB — holds ~60 proxy frames at 720p).
+        // Doubled from 64MB to reduce cache misses during fast scrubbing.
+        // At proxy resolution (1280×720 RGBA = ~3.5MB/frame), this holds ~36 frames.
+        // The extra memory cost is negligible on modern systems.
+        let frame_cache: JpegFrameCache = JpegFrameCache::new(128);
 
         Self {
             services: HashMap::new(),

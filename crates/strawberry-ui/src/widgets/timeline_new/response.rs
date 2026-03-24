@@ -106,6 +106,13 @@ pub struct TimelineResponse {
     /// True during drag, false when drag ends. Consuming code should use this
     /// to update `ScrubState` resource for compositor optimization.
     pub is_scrubbing: bool,
+
+    // =========================================================================
+    // CLIP AUDIO
+    // =========================================================================
+    /// Clip audio mute toggled via 🔊/🔇 icon click (clip_entity_bits, current_muted_state)
+    /// Consuming code should submit `SetClipAudioCommand::set_muted(!current_muted)`
+    pub toggle_clip_mute: Option<(u64, bool)>,
 }
 
 impl TimelineResponse {
@@ -135,6 +142,7 @@ impl TimelineResponse {
             tool_changed: None,
             active_tool: TimelineTool::Pointer,
             is_scrubbing: false,
+            toggle_clip_mute: None,
         }
     }
 

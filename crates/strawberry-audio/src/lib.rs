@@ -21,8 +21,12 @@ pub mod ffmpeg_audio;
 pub mod mixer;
 pub mod playback;
 pub mod resampler;
+pub mod waveform;
+pub mod loudness;
 
 pub use ffmpeg_audio::{AudioDecodeError, AudioMetadata, AudioSamples, FFmpegAudioDecoder};
 pub use mixer::{ClipAudioEntry, KiraMixerService};
 pub use playback::{AudioError, AudioPlaybackService, LoadedAudio, PlaybackState, SyncStats};
 pub use resampler::{ResamplerConfig, SpeedResampler};
+pub use waveform::{WaveformCache, WaveformPeaks, compute_peaks_from_frames};
+pub use loudness::{measure_integrated_lufs, compute_normalization_gain};

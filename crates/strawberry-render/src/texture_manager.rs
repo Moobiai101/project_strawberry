@@ -282,7 +282,7 @@ impl TextureManager {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            &frame.data,
+            frame.data.as_slice(),
             wgpu::ImageDataLayout {
                 offset: 0,
                 bytes_per_row: Some(frame.width * 4), // RGBA = 4 bytes

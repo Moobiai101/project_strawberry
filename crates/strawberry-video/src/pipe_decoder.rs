@@ -323,13 +323,13 @@ impl PipeDecoder {
                     let frame_num = state.current_decode_frame.fetch_add(1, Ordering::SeqCst);
                     let timestamp = Duration::from_secs_f64(frame_num as f64 / frame_rate);
 
-                    let frame = VideoFrame {
+                    let frame = VideoFrame::new(
+                        frame_buffer.clone(),
                         width,
                         height,
-                        data: frame_buffer.clone(),
                         timestamp,
-                        frame_number: frame_num,
-                    };
+                        frame_num,
+                    );
 
                     let timestamped = TimestampedFrame {
                         frame,

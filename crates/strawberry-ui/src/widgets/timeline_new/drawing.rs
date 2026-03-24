@@ -136,7 +136,13 @@ impl TimelineWidget {
     ///
     /// Uses BatchedClipRenderer to reduce draw calls from O(n*7) to O(1) per layer,
     /// enabling smooth 60fps rendering with 1000+ clips.
-    pub(crate) fn draw_clips(&self, ui: &mut Ui, rect: Rect, hovered_clip: Option<u64>) {
+    pub(crate) fn draw_clips(
+        &self,
+        ui: &mut Ui,
+        rect: Rect,
+        hovered_clip: Option<u64>,
+        waveform_cache: Option<&strawberry_core::components::waveform::WaveformCache>,
+    ) {
         let painter = ui.painter();
 
         // First pass: collect all visible clips into VisibleClipRect structs
@@ -216,6 +222,7 @@ impl TimelineWidget {
                 source_in: clip.source_in,
                 source_out: clip.source_out,
                 is_selected: clip.selected,
+                audio_muted: clip.audio_muted,
             });
         }
 
@@ -227,6 +234,11 @@ impl TimelineWidget {
         // Filmstrips still per-clip (texture-based, already optimized)
         self.draw_filmstrips(&painter, renderer.clips());
 
+        // Waveform peaks overlay (after filmstrips, before selection)
+        if let Some(cache) = waveform_cache {
+            renderer.render_waveforms(&painter, cache);
+        }
+
         // Selection overlays: cyan glow + white tint for selected clips.
         // Rendered AFTER filmstrips so the overlay sits on top of thumbnails,
         // and BEFORE borders so the glow appears under the border stroke.
@@ -235,6 +247,7 @@ impl TimelineWidget {
         renderer.render_borders(&painter);
         renderer.render_handles(&painter);
         renderer.render_text(&painter, colors::CLIP_TEXT);
+        renderer.render_audio_icons(&painter);
     }
 
     /// Draw filmstrip thumbnails for visible clips (texture-based, separate pass)
@@ -496,6 +509,42 @@ impl TimelineWidget {
                 if pos.x >= gap_left && pos.x <= gap_right {
                     return Some((clip_a.entity_bits, clip_b.entity_bits));
                 }
+            }
+        }
+        None
+    }
+
+    /// Hit test for audio icon click on a clip.
+    ///
+    /// Returns `Some((entity_bits, current_muted_state))` if the click position
+    /// falls within the 16×16px audio icon zone at bottoom-right of a clip.
+    /// Called BEFORE `hit_test_clip()` so icon clicks don't trigger selection.
+    ///
+    /// ## Performance
+    /// Only checks visible clips (same iteration as other hit tests).
+    pub(crate) fn hit_test_audio_icon(pos: egui::Pos2, content_rect: Rect, clips: &[super::types::ClipInfo], zoom: f32, scroll_x: f32, tracks: &[super::types::TrackInfo]) -> Option<(u64, bool)> {
+        use super::rendering::{time_to_x, track_height as get_track_height, track_y_position};
+
+        for clip in clips {
+            let clip_x: f32 = time_to_x(clip.timeline_start, zoom, scroll_x) + content_rect.left();
+            let clip_width: f32 = clip.duration.as_secs_f32() * zoom;
+
+            // Skip narrow clips (same threshold as render_audio_icons)
+            if clip_width <= 60.0 {
+                continue;
+            }
+
+            let track_y: f32 = track_y_position(tracks, clip.track_index) + content_rect.top();
+            let th: f32 = get_track_height(tracks, clip.track_index) - 4.0;
+
+            // Icon rect: 22x16 at BOTTOM-LEFT of clip (matches render_audio_icons)
+            let icon_rect = Rect::from_min_size(
+                egui::pos2(clip_x + 5.0, track_y + th - 19.0),
+                egui::vec2(22.0, 16.0),
+            );
+
+            if icon_rect.contains(pos) {
+                return Some((clip.entity_bits, clip.audio_muted));
             }
         }
         None

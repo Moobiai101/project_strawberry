@@ -136,6 +136,10 @@ pub struct TimelineWidget {
     /// Maps asset_uuid -> Vec<(timestamp_secs, TextureId)>
     /// Used by draw_clips to render filmstrip thumbnails
     pub(crate) filmstrip_textures: HashMap<Uuid, FilmstripAssetTextures>,
+
+    /// Pre-computed waveform peak cache for audio waveform rendering.
+    /// Cheaply cloned from KiraMixerService (Arc<WaveformPeaks> inside).
+    pub(crate) waveform_cache: Option<strawberry_core::components::waveform::WaveformCache>,
 }
 
 impl Default for TimelineWidget {
@@ -166,6 +170,7 @@ impl TimelineWidget {
             active_tool: TimelineTool::default(),
             centered_playhead: true, // Default to centered playhead mode
             filmstrip_textures: HashMap::new(),
+            waveform_cache: None,
         }
     }
 
@@ -279,6 +284,15 @@ impl TimelineWidget {
         textures: HashMap<Uuid, FilmstripAssetTextures>,
     ) -> Self {
         self.filmstrip_textures = textures;
+        self
+    }
+
+    /// Set waveform peak cache for rendering audio waveforms on clips.
+    ///
+    /// Cloning `WaveformCache` is cheap — it only copies Arc pointers,
+    /// not the actual peak data.
+    pub fn with_waveform_cache(mut self, cache: strawberry_core::components::waveform::WaveformCache) -> Self {
+        self.waveform_cache = Some(cache);
         self
     }
 

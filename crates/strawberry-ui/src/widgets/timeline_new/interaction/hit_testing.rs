@@ -217,6 +217,8 @@ mod tests {
             asset_uuid: None,
             source_in: Duration::ZERO,
             source_out: Duration::from_secs(duration_secs),
+            audio_muted: false,
+            audio_volume: 1.0,
         }
     }
 

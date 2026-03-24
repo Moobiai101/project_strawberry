@@ -677,23 +677,40 @@ impl<'a> TreeBehavior<'a> {
                 .unwrap_or_default()
         });
 
-        // Build TimelineWidget from ECS data with persisted states
-        let mut timeline_widget = self
-            .build_timeline_widget(frame_rate)
-            .with_drag_state(drag_state)
-            .with_trim_state(trim_state)
-            .with_active_tool(active_tool);
-
-        // Load filmstrip textures for clips (if thumbnails exist on disk)
-        // Uses persistent cache to avoid per-frame disk I/O
+        // Build timeline clips ONCE for both filmstrip loading and widget building.
+        // Previously this was called twice per frame — once here and once inside
+        // build_timeline_widget() — duplicating ECS iteration over all entities.
         let clips = self.get_timeline_clips(
             self.world
                 .get_resource::<ActiveTimeline>()
                 .and_then(|a| a.get()),
         );
+
+        // Build the timeline widget, reusing pre-computed clips
+        let mut timeline_widget = self
+            .build_timeline_widget_with_clips(frame_rate, clips.clone())
+            .with_drag_state(drag_state)
+            .with_trim_state(trim_state)
+            .with_active_tool(active_tool);
+
+        // Load filmstrip textures for visible clips (if thumbnails exist on disk)
+        // Uses persistent cache to avoid per-frame disk I/O
         let filmstrip_textures = self.load_filmstrip_textures(ui.ctx(), &clips);
         if !filmstrip_textures.is_empty() {
             timeline_widget = timeline_widget.with_filmstrip_textures(filmstrip_textures);
+        }
+
+        // Attach waveform peak cache for audio waveform rendering.
+        // Clone is cheap — WaveformCache wraps HashMap<Uuid, Arc<WaveformPeaks>>.
+        if self
+            .world
+            .contains_resource::<strawberry_render::AudioMixerResource>()
+        {
+            let mixer = self
+                .world
+                .resource::<strawberry_render::AudioMixerResource>();
+            let cache = mixer.0.waveform_cache().clone();
+            timeline_widget = timeline_widget.with_waveform_cache(cache);
         }
 
         let timeline_response = timeline_widget.show(ui);
@@ -840,6 +857,20 @@ impl<'a> TreeBehavior<'a> {
                 track_entity,
                 !current_locked,
             )));
+        }
+
+        // Handle clip audio mute toggle from 🔊/🔇 icon click
+        if let Some((clip_entity_bits, current_muted)) = timeline_response.toggle_clip_mute {
+            let entity = bevy_ecs::entity::Entity::from_bits(clip_entity_bits);
+            if let Some(stable_id) = self.world.get::<StableId>(entity) {
+                let clip_uuid: uuid::Uuid = stable_id.uuid();
+                command_queue.submit(Box::new(
+                    strawberry_core::commands::SetClipAudioCommand::set_muted(
+                        clip_uuid,
+                        !current_muted,
+                    ),
+                ));
+            }
         }
 
         // Handle clip move from drag-and-drop
@@ -1069,14 +1100,31 @@ impl<'a> TreeBehavior<'a> {
     }
 
     /// Build TimelineWidget from ECS state
+    #[allow(dead_code)] // Backward-compat wrapper; main path uses build_timeline_widget_with_clips
     fn build_timeline_widget(&self, frame_rate: f64) -> TimelineWidget {
+        let timeline_entity = self
+            .world
+            .get_resource::<ActiveTimeline>()
+            .and_then(|a| a.get());
+        let clips = self.get_timeline_clips(timeline_entity);
+        self.build_timeline_widget_with_clips(frame_rate, clips)
+    }
+
+    /// Build TimelineWidget from ECS state with pre-computed clips.
+    ///
+    /// This avoids the double `get_timeline_clips()` call that was causing
+    /// redundant ECS iteration every frame. The caller computes clips once
+    /// and passes them here and to `load_filmstrip_textures()`.
+    fn build_timeline_widget_with_clips(
+        &self,
+        frame_rate: f64,
+        clips: Vec<ClipInfo>,
+    ) -> TimelineWidget {
         // Get active timeline
         let active_timeline = self.world.get_resource::<ActiveTimeline>();
         let timeline_entity = active_timeline.and_then(|a| a.get());
 
         let (timeline_name, duration) = if let Some(entity) = timeline_entity {
-            // Read the dynamic timeline duration from PlaybackClock (synced every frame
-            // by timeline_duration_sync_system from actual clip endpoints).
             let clock_duration: Duration = self
                 .world
                 .get_resource::<strawberry_core::systems::PlaybackClock>()
@@ -1093,9 +1141,6 @@ impl<'a> TreeBehavior<'a> {
 
         // Build track info
         let tracks = self.get_timeline_tracks(timeline_entity);
-
-        // Build clip info
-        let clips = self.get_timeline_clips(timeline_entity);
 
         // Get playhead
         let playhead = self.world.resource::<Playhead>();
@@ -1217,6 +1262,17 @@ impl<'a> TreeBehavior<'a> {
                                     asset_uuid,
                                     source_in: clip.source_in,
                                     source_out: clip.source_out,
+                                    // Audio state from AudioClip component (defaults if absent)
+                                    audio_muted: self
+                                        .world
+                                        .get::<strawberry_core::components::AudioClip>(clip_entity)
+                                        .map(|a| a.muted)
+                                        .unwrap_or(false),
+                                    audio_volume: self
+                                        .world
+                                        .get::<strawberry_core::components::AudioClip>(clip_entity)
+                                        .map(|a| a.volume)
+                                        .unwrap_or(1.0),
                                 });
                             }
                         }
@@ -1231,6 +1287,13 @@ impl<'a> TreeBehavior<'a> {
     fn render_inspector(&mut self, ui: &mut egui::Ui) {
         ui.heading("Inspector");
         ui.separator();
+
+        // Wrap all inspector content in a scroll area for dynamic resizing
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                // Use full available width for controls
+                ui.set_min_width(ui.available_width());
 
         // --- Selected Clip Properties (Editable) ---
         // Read selection from the Selection resource (stores entity bits in a HashSet)
@@ -1429,12 +1492,36 @@ impl<'a> TreeBehavior<'a> {
                         }
                     });
             });
+
+            // --- Per-Clip Audio Controls ---
+            {
+                let selected_entity = {
+                    let selection = self.world.resource::<strawberry_core::resources::Selection>();
+                    selection
+                        .primary
+                        .or_else(|| selection.selected.iter().next().copied())
+                        .map(bevy_ecs::entity::Entity::from_bits)
+                };
+                if let Some(entity) = selected_entity {
+                    crate::audio_inspector::render_clip_audio_controls(
+                        ui,
+                        &self.world,
+                        clip_uuid,
+                        entity,
+                    );
+                }
+            }
         } else {
             ui.colored_label(
                 egui::Color32::from_gray(128),
                 "Select a clip to edit properties",
             );
         }
+
+        ui.separator();
+
+        // --- Master Audio Controls (always visible) ---
+        crate::audio_inspector::render_master_audio_controls(ui, &self.world);
 
         ui.separator();
 
@@ -1474,6 +1561,7 @@ impl<'a> TreeBehavior<'a> {
         ui.label(format!("Frame: {}", playhead.current_frame));
         ui.label(format!("Time: {:.2}s", playhead.current_time.as_secs_f64()));
         ui.label(format!("Speed: {:.1}x", playhead.playback_speed));
+        }); // end ScrollArea
     }
 
     /// Render the media browser panel

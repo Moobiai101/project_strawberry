@@ -7,6 +7,7 @@
 //! This is a production-grade tool that users will depend on daily.
 //! Every line of code must be shippable quality.
 
+mod audio_inspector;
 mod docking;
 mod viewport_renderer;
 

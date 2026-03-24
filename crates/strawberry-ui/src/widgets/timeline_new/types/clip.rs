@@ -34,6 +34,10 @@ pub struct ClipInfo {
     pub source_in: Duration,
     /// Source out point
     pub source_out: Duration,
+    /// Whether this clip's audio is muted (for 🔊/🔇 icon rendering)
+    pub audio_muted: bool,
+    /// Clip audio volume 0.0–2.0 (for icon opacity hint)
+    pub audio_volume: f32,
 }
 
 // ============================================================================
@@ -84,6 +88,8 @@ mod tests {
             asset_uuid: None,
             source_in: Duration::ZERO,
             source_out: Duration::from_secs(10),
+            audio_muted: false,
+            audio_volume: 1.0,
         };
         assert_eq!(clip.name, "Test Clip");
         assert_eq!(clip.duration.as_secs(), 10);

@@ -25,11 +25,62 @@ pub enum DecodeError {
     PipeDecoder(String),
 }
 
+/// Pixel data storage for VideoFrame.
+///
+/// Supports two modes:
+/// - **Owned**: `Vec<u8>` — fresh decoded frames from FFmpeg
+/// - **Shared**: `Arc<Vec<u8>>` — zero-copy frames from LRU cache
+///
+/// The shared path eliminates ~2MB per-frame clones that were causing
+/// scrubbing lag. The LRU cache stores `Arc<Vec<u8>>` and now returns
+/// a shared reference instead of copying the entire buffer.
+#[derive(Debug, Clone)]
+pub enum FrameData {
+    /// Owned pixel data (from fresh decode)
+    Owned(Vec<u8>),
+    /// Shared pixel data (from LRU cache — zero-copy)
+    Shared(Arc<Vec<u8>>),
+}
+
+impl FrameData {
+    /// Get a slice of the pixel data (zero-copy for both variants)
+    #[inline]
+    pub fn as_slice(&self) -> &[u8] {
+        match self {
+            FrameData::Owned(v) => v.as_slice(),
+            FrameData::Shared(arc) => arc.as_slice(),
+        }
+    }
+
+    /// Get the length of the pixel data
+    #[inline]
+    pub fn len(&self) -> usize {
+        match self {
+            FrameData::Owned(v) => v.len(),
+            FrameData::Shared(arc) => arc.len(),
+        }
+    }
+
+    /// Check if the pixel data is empty
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Convert to owned Vec (clones only if shared — avoid in hot paths)
+    pub fn into_vec(self) -> Vec<u8> {
+        match self {
+            FrameData::Owned(v) => v,
+            FrameData::Shared(arc) => (*arc).clone(),
+        }
+    }
+}
+
 /// Decoded video frame
 #[derive(Debug, Clone)]
 pub struct VideoFrame {
-    /// Raw RGBA pixel data
-    pub data: Vec<u8>,
+    /// Raw RGBA pixel data (owned or shared via Arc for zero-copy cache path)
+    pub data: FrameData,
     /// Frame width
     pub width: u32,
     /// Frame height
@@ -41,7 +92,7 @@ pub struct VideoFrame {
 }
 
 impl VideoFrame {
-    /// Create a new frame from raw RGBA data
+    /// Create a new frame from raw RGBA data (owned)
     pub fn new(
         data: Vec<u8>,
         width: u32,
@@ -50,7 +101,27 @@ impl VideoFrame {
         frame_number: u64,
     ) -> Self {
         Self {
-            data,
+            data: FrameData::Owned(data),
+            width,
+            height,
+            timestamp,
+            frame_number,
+        }
+    }
+
+    /// Create a frame with shared pixel data (zero-copy from LRU cache).
+    ///
+    /// This avoids the ~2MB allocation that `to_video_frame()` was doing
+    /// on every cache hit during timeline scrubbing.
+    pub fn from_shared(
+        data: Arc<Vec<u8>>,
+        width: u32,
+        height: u32,
+        timestamp: Duration,
+        frame_number: u64,
+    ) -> Self {
+        Self {
+            data: FrameData::Shared(data),
             width,
             height,
             timestamp,

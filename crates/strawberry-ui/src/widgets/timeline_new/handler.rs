@@ -106,7 +106,7 @@ impl TimelineWidget {
             self.draw_track_lanes(ui, content_rect);
 
             let hovered_clip: Option<u64> = self.detect_hovered_clip(ui, content_rect);
-            self.draw_clips(ui, content_rect, hovered_clip);
+            self.draw_clips(ui, content_rect, hovered_clip, self.waveform_cache.as_ref());
 
             let hovered_gap: Option<(u64, u64)> = self.detect_hovered_gap(ui, content_rect);
             self.draw_transition_zones(ui, content_rect, hovered_gap);
@@ -128,14 +128,16 @@ impl TimelineWidget {
         let mut context_menu_clip: Option<(u64, egui::Pos2)> = None;
         let mut zoom_changed: Option<f32> = None;
         let mut scroll_changed_val: Option<(f32, f32)> = None;
+        let mut toggle_clip_mute: Option<(u64, bool)> = None;
 
-        // Click handling
+        // Click handling — audio icon checked FIRST (before clip selection)
         self.handle_clicks(
             &response,
             ruler_rect,
             content_rect,
             &mut seek_to,
             &mut clicked_clip,
+            &mut toggle_clip_mute,
         );
 
         // Drag origin tracking
@@ -207,6 +209,7 @@ impl TimelineWidget {
             tool_changed,
             active_tool: self.active_tool,
             is_scrubbing,
+            toggle_clip_mute,
         }
     }
 
@@ -245,6 +248,7 @@ impl TimelineWidget {
         content_rect: Rect,
         seek_to: &mut Option<Duration>,
         clicked_clip: &mut Option<u64>,
+        toggle_clip_mute: &mut Option<(u64, bool)>,
     ) {
         // egui's clicked() fires only on press→release with ZERO mouse movement.
         // Real users nearly always slip 1-2px, causing egui to classify the
@@ -265,14 +269,21 @@ impl TimelineWidget {
                         *seek_to = Some(self.x_to_time(x_in_content));
                     }
                 } else if content_rect.contains(pointer_pos) {
-                    *clicked_clip = self.hit_test_clip(pointer_pos, content_rect);
-                    tracing::info!(
-                        "SELECTION: clicked() hit_test_clip result={:?}",
-                        clicked_clip
-                    );
-                    if clicked_clip.is_none() && !self.centered_playhead {
-                        let x_in_content: f32 = pointer_pos.x - content_rect.left();
-                        *seek_to = Some(self.x_to_time(x_in_content));
+                    // Check audio icon FIRST — icon clicks toggle mute, not selection
+                    if let Some((entity_bits, current_muted)) =
+                        Self::hit_test_audio_icon(pointer_pos, content_rect, &self.clips, self.zoom, self.scroll_x, &self.tracks)
+                    {
+                        *toggle_clip_mute = Some((entity_bits, current_muted));
+                    } else {
+                        *clicked_clip = self.hit_test_clip(pointer_pos, content_rect);
+                        tracing::info!(
+                            "SELECTION: clicked() hit_test_clip result={:?}",
+                            clicked_clip
+                        );
+                        if clicked_clip.is_none() && !self.centered_playhead {
+                            let x_in_content: f32 = pointer_pos.x - content_rect.left();
+                            *seek_to = Some(self.x_to_time(x_in_content));
+                        }
                     }
                 }
             }

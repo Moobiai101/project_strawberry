@@ -8,6 +8,9 @@
 //! - Serializable operations
 
 pub mod asset;
+pub mod audio;
+pub mod audio_fade;
+pub mod audio_normalize;
 pub mod clip_property;
 pub mod gizmo_commands;
 pub mod import;
@@ -22,6 +25,9 @@ pub mod track;
 pub mod transform;
 
 pub use asset::*;
+pub use audio::*;
+pub use audio_fade::*;
+pub use audio_normalize::*;
 pub use clip_property::*;
 pub use import::*;
 pub use playback::*;

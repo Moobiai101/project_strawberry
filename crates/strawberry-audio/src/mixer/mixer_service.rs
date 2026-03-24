@@ -26,6 +26,7 @@ use kira::{AudioManager, AudioManagerSettings, Decibels, DefaultBackend, Panning
 use uuid::Uuid;
 
 use crate::mixer::clip_sound::ClipAudioEntry;
+use crate::waveform::{WaveformCache, compute_peaks_from_frames, DEFAULT_PEAK_COUNT};
 
 /// Errors that can occur in the mixer.
 #[derive(Debug, thiserror::Error)]
@@ -69,18 +70,36 @@ pub struct KiraMixerService {
 
     /// Whether master is muted.
     master_muted: bool,
+
+    /// Pre-computed waveform peaks, auto-populated on clip registration.
+    /// Keyed by asset UUID, accessed by UI renderer for waveform display.
+    waveform_cache: WaveformCache,
 }
 
-/// Convert linear volume (0.0–1.0) to kira Decibels.
+/// Convert linear slider value (0.0–2.0) to kira Decibels using a
+/// **squared power curve** for perceptually responsive volume control.
 ///
-/// linear 1.0 → 0 dB (unity gain)
-/// linear 0.5 → ~-6 dB
-/// linear 0.0 → -80 dB (effectively silent)
-fn linear_to_decibels(linear: f32) -> Decibels {
+/// The slider percentage is squared before dB conversion, which makes
+/// the full slider range feel more responsive to the user:
+///
+/// | Slider | Amplitude² | dB      | Perceived Effect        |
+/// |--------|-----------|---------|-------------------------|
+/// | 200%   | 4.0       | +12.0   | Very noticeable boost   |
+/// | 150%   | 2.25      | +7.0    | Clear boost             |
+/// | 100%   | 1.0       | 0.0     | Unity gain              |
+/// | 50%    | 0.25      | -12.0   | Prominent reduction     |
+/// | 25%    | 0.0625    | -24.1   | Very quiet              |
+/// | 0%     | 0.0       | -60.0   | Silent                  |
+///
+/// Without the power curve, 50%→-6dB and 200%→+6dB, which are barely
+/// noticeable changes to the human ear.
+fn perceptual_to_decibels(linear: f32) -> Decibels {
     if linear <= 0.001 {
-        Decibels(-80.0)
+        Decibels::SILENCE
     } else {
-        Decibels(20.0 * linear.log10())
+        // Square the amplitude for a more responsive curve
+        let amplitude_squared: f32 = linear * linear;
+        Decibels(20.0 * amplitude_squared.log10())
     }
 }
 
@@ -113,6 +132,7 @@ impl KiraMixerService {
             clips: HashMap::with_capacity(16),
             master_volume: 1.0,
             master_muted: false,
+            waveform_cache: WaveformCache::default(),
         })
     }
 
@@ -138,6 +158,15 @@ impl KiraMixerService {
             sound_data.duration().as_secs_f64()
         );
 
+        // Pre-compute waveform peaks from raw frame data (one-time O(n) pass).
+        // Uses direct Arc<[Frame]> slice access — no per-call overhead.
+        let peaks = compute_peaks_from_frames(
+            &sound_data.frames,
+            sound_data.sample_rate,
+            DEFAULT_PEAK_COUNT,
+        );
+        self.waveform_cache.insert(asset_uuid, peaks);
+
         self.clips
             .insert(asset_uuid, ClipAudioEntry::new(sound_data));
         Ok(())
@@ -147,13 +176,42 @@ impl KiraMixerService {
     pub fn unregister_clip_audio(&mut self, asset_uuid: &Uuid) {
         if let Some(mut entry) = self.clips.remove(asset_uuid) {
             entry.stop();
+            self.waveform_cache.remove(asset_uuid);
             tracing::info!("Unregistered clip audio: {}", asset_uuid);
         }
+    }
+
+    /// Get a reference to the waveform peak cache.
+    ///
+    /// Used by UI renderer to draw waveforms on timeline clips.
+    /// O(1) lookup per visible clip — no allocations in render path.
+    pub fn waveform_cache(&self) -> &WaveformCache {
+        &self.waveform_cache
     }
 
     /// Check if a clip is registered.
     pub fn has_clip(&self, asset_uuid: &Uuid) -> bool {
         self.clips.contains_key(asset_uuid)
+    }
+
+    /// Measure integrated loudness (LUFS) of a registered clip's audio.
+    ///
+    /// Uses EBU R128 / ITU-R BS.1770-4 standard via the `ebur128` crate.
+    /// Reads directly from cached `StaticSoundData` frames — no disk I/O.
+    ///
+    /// ## Performance
+    /// - One-shot call (NOT per-frame) — only invoked on explicit user action
+    /// - O(n) single pass over frames via ebur128's internal block processing
+    /// - Zero impact on playback hot path
+    ///
+    /// Returns `None` if the clip is not registered.
+    pub fn measure_clip_loudness(&self, asset_uuid: &Uuid) -> Option<f64> {
+        let entry: &ClipAudioEntry = self.clips.get(asset_uuid)?;
+        let lufs: f64 = crate::loudness::measure_integrated_lufs(
+            &entry.sound_data.frames,
+            entry.sound_data.sample_rate,
+        );
+        Some(lufs)
     }
 
     // ── Playback Control ──
@@ -260,10 +318,14 @@ impl KiraMixerService {
     ) {
         if let Some(entry) = self.clips.get_mut(asset_uuid) {
             if let Some(ref mut handle) = entry.handle {
+                // Use -55dB for mute instead of SILENCE (-60dB).
+                // Kira treats -60dB as the silence threshold and may
+                // internally stop the sound, preventing unmute recovery.
+                // -55dB is inaudible but keeps the handle alive.
                 let db: Decibels = if muted {
-                    Decibels(-80.0)
+                    Decibels(-55.0)
                 } else {
-                    linear_to_decibels(volume_linear)
+                    perceptual_to_decibels(volume_linear)
                 };
                 handle.set_volume(db, Tween::default());
                 handle.set_panning(pan_to_kira_panning(pan), Tween::default());
@@ -273,9 +335,9 @@ impl KiraMixerService {
 
     // ── Master Controls ──
 
-    /// Set the master volume (linear 0.0–1.0).
+    /// Set the master volume (linear 0.0–2.0, where 1.0 = unity gain).
     pub fn set_master_volume(&mut self, volume: f32) {
-        self.master_volume = volume.clamp(0.0, 1.0);
+        self.master_volume = volume.clamp(0.0, 2.0);
         self.apply_master_volume();
     }
 
@@ -292,9 +354,9 @@ impl KiraMixerService {
 
     fn apply_master_volume(&mut self) {
         let db: Decibels = if self.master_muted {
-            Decibels(-80.0)
+            Decibels(-55.0) // Keep above SILENCE threshold (-60dB)
         } else {
-            linear_to_decibels(self.master_volume)
+            perceptual_to_decibels(self.master_volume)
         };
         self.master_track.set_volume(db, Tween::default());
     }

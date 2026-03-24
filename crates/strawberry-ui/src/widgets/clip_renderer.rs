@@ -62,6 +62,8 @@ pub struct VisibleClipRect {
     pub source_out: Duration,
     /// Whether this clip is currently selected
     pub is_selected: bool,
+    /// Whether this clip's audio is muted (for 🔊/🔇 icon)
+    pub audio_muted: bool,
 }
 
 // ============================================================================
@@ -303,6 +305,215 @@ impl BatchedClipRenderer {
             }
         }
     }
+
+    /// Render audio mute/unmute icons at the bottom-right of each clip.
+    ///
+    /// Uses custom-painted speaker shapes — egui's default font does NOT include
+    /// emoji Unicode, so we paint directly with the `Painter` API.
+    ///
+    /// - Unmuted: speaker body + sound waves (subtle white)
+    /// - Muted: speaker body + diagonal slash (red)
+    ///
+    /// Only renders when clip width > 60px (too narrow = skip icon).
+    ///
+    /// ## Performance
+    /// - A few `painter` calls per visible clip (viewport-culled, typically ~20)
+    /// - Zero string allocation, zero egui widget overhead
+    pub fn render_audio_icons(&self, painter: &Painter) {
+        for clip in &self.visible_clips {
+            let width: f32 = clip.rect.width();
+            if width <= 60.0 {
+                continue; // Too narrow for icon
+            }
+
+            // Icon center positioned at BOTTOM-LEFT corner of clip
+            let cx: f32 = clip.rect.left() + 16.0;
+            let cy: f32 = clip.rect.bottom() - 11.0;
+
+            // Sleek dark rounded pill background for visibility on filmstrips
+            let bg_rect = Rect::from_center_size(pos2(cx, cy), vec2(22.0, 16.0));
+            painter.rect_filled(
+                bg_rect,
+                8.0, // fully rounded pill
+                Color32::from_rgba_unmultiplied(20, 20, 20, 180),
+            );
+
+            if clip.audio_muted {
+                // MUTED: red "X" over speaker — clean & distinct
+                let red = Color32::from_rgb(255, 80, 80);
+
+                // Speaker body
+                painter.rect_filled(
+                    Rect::from_min_size(pos2(cx - 6.0, cy - 3.0), vec2(4.0, 6.0)),
+                    1.0,
+                    red,
+                );
+                // Speaker cone
+                painter.line_segment(
+                    [pos2(cx - 2.0, cy - 3.0), pos2(cx + 2.0, cy - 6.0)],
+                    egui::Stroke::new(1.5, red),
+                );
+                painter.line_segment(
+                    [pos2(cx - 2.0, cy + 3.0), pos2(cx + 2.0, cy + 6.0)],
+                    egui::Stroke::new(1.5, red),
+                );
+                // X mark (mute indicator) — two crossing lines
+                let x_color = Color32::from_rgb(255, 100, 100);
+                painter.line_segment(
+                    [pos2(cx + 3.0, cy - 4.0), pos2(cx + 9.0, cy + 4.0)],
+                    egui::Stroke::new(2.0, x_color),
+                );
+                painter.line_segment(
+                    [pos2(cx + 9.0, cy - 4.0), pos2(cx + 3.0, cy + 4.0)],
+                    egui::Stroke::new(2.0, x_color),
+                );
+            } else {
+                // UNMUTED: clean white speaker with sound wave arcs
+                let white = Color32::from_rgb(210, 215, 220);
+
+                // Speaker body
+                painter.rect_filled(
+                    Rect::from_min_size(pos2(cx - 6.0, cy - 3.0), vec2(4.0, 6.0)),
+                    1.0,
+                    white,
+                );
+                // Speaker cone
+                painter.line_segment(
+                    [pos2(cx - 2.0, cy - 3.0), pos2(cx + 2.0, cy - 6.0)],
+                    egui::Stroke::new(1.5, white),
+                );
+                painter.line_segment(
+                    [pos2(cx - 2.0, cy + 3.0), pos2(cx + 2.0, cy + 6.0)],
+                    egui::Stroke::new(1.5, white),
+                );
+                // Sound wave arcs — two curved lines
+                let wave = Color32::from_rgba_unmultiplied(180, 200, 220, 200);
+                // Inner arc
+                painter.line_segment(
+                    [pos2(cx + 4.0, cy - 3.0), pos2(cx + 5.5, cy)],
+                    egui::Stroke::new(1.5, wave),
+                );
+                painter.line_segment(
+                    [pos2(cx + 5.5, cy), pos2(cx + 4.0, cy + 3.0)],
+                    egui::Stroke::new(1.5, wave),
+                );
+                // Outer arc
+                painter.line_segment(
+                    [pos2(cx + 6.5, cy - 5.0), pos2(cx + 8.5, cy)],
+                    egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(150, 170, 200, 150)),
+                );
+                painter.line_segment(
+                    [pos2(cx + 8.5, cy), pos2(cx + 6.5, cy + 5.0)],
+                    egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(150, 170, 200, 150)),
+                );
+            }
+        }
+    }
+
+    /// Render waveform peaks as vertical bars inside each clip.
+    ///
+    /// Draws pre-computed audio peaks from `WaveformCache` as a semi-transparent
+    /// cyan/teal waveform overlay. Only renders for clips with audio and cached peaks.
+    ///
+    /// ## Performance
+    /// - O(1) cache lookup per visible clip (HashMap)
+    /// - Single Mesh for all waveforms (one draw call)
+    /// - ~200 vertical bars per clip at typical widths
+    /// - No allocations beyond the batch Mesh
+    /// - Skips clips narrower than 30px (no visual benefit)
+    pub fn render_waveforms(
+        &self,
+        painter: &Painter,
+        waveform_cache: &strawberry_core::components::waveform::WaveformCache,
+    ) {
+        if self.visible_clips.is_empty() {
+            return;
+        }
+
+        let mut shapes: Vec<Shape> = Vec::new();
+
+        for clip in &self.visible_clips {
+            let asset_uuid: uuid::Uuid = match clip.asset_uuid {
+                Some(uuid) => uuid,
+                None => continue, // No audio asset
+            };
+
+            let clip_width: f32 = clip.rect.width();
+            if clip_width < 30.0 {
+                continue; // Too narrow for waveform
+            }
+
+            let peaks = match waveform_cache.get(&asset_uuid) {
+                Some(p) => p,
+                None => continue, // No cached peaks
+            };
+
+            if peaks.peaks.is_empty() || peaks.total_frames == 0 {
+                continue;
+            }
+
+            // Calculate source region relative to total audio duration
+            let total_duration_secs: f64 =
+                peaks.total_frames as f64 / peaks.sample_rate as f64;
+            if total_duration_secs <= 0.0 {
+                continue;
+            }
+
+            let source_in_ratio: f64 =
+                clip.source_in.as_secs_f64() / total_duration_secs;
+            let source_out_ratio: f64 =
+                clip.source_out.as_secs_f64() / total_duration_secs;
+
+            // Number of vertical bars to draw = min(clip_width, peak_count)
+            let bar_count: usize = (clip_width as usize).min(peaks.peaks.len());
+            if bar_count == 0 {
+                continue;
+            }
+
+            // Waveform area: inset slightly from clip edges
+            let wave_top: f32 = clip.rect.top() + 2.0;
+            let wave_bottom: f32 = clip.rect.bottom() - 2.0;
+            let wave_height: f32 = wave_bottom - wave_top;
+            let wave_center: f32 = (wave_top + wave_bottom) * 0.5;
+
+            if wave_height < 4.0 {
+                continue; // Not enough vertical space
+            }
+
+            // Waveform color: semi-transparent teal/cyan
+            let wave_color = Color32::from_rgba_unmultiplied(80, 200, 220, 100);
+            let wave_stroke = Stroke::new(1.0, wave_color);
+
+            for i in 0..bar_count {
+                let x_ratio: f64 = i as f64 / bar_count as f64;
+                let peak_ratio: f64 =
+                    source_in_ratio + x_ratio * (source_out_ratio - source_in_ratio);
+
+                let peak_idx: usize =
+                    (peak_ratio * peaks.peaks.len() as f64) as usize;
+                let amplitude: f32 = peaks.peaks.get(peak_idx).copied().unwrap_or(0.0);
+
+                if amplitude < 0.01 {
+                    continue; // Skip silent bars
+                }
+
+                let x: f32 = clip.rect.left() + (i as f32 / bar_count as f32) * clip_width;
+                let half_bar: f32 = amplitude * wave_height * 0.45;
+
+                shapes.push(Shape::line_segment(
+                    [
+                        pos2(x, wave_center - half_bar),
+                        pos2(x, wave_center + half_bar),
+                    ],
+                    wave_stroke,
+                ));
+            }
+        }
+
+        if !shapes.is_empty() {
+            painter.extend(shapes);
+        }
+    }
 }
 
 // ============================================================================
@@ -423,6 +634,7 @@ mod tests {
             source_in: Duration::ZERO,
             source_out: Duration::from_secs(5),
             is_selected: false,
+            audio_muted: false,
         });
 
         assert_eq!(renderer.clips().len(), 1);
@@ -445,6 +657,7 @@ mod tests {
             source_in: Duration::ZERO,
             source_out: Duration::from_secs(5),
             is_selected: false,
+            audio_muted: false,
         });
 
         renderer.clear();
