@@ -223,6 +223,9 @@ impl TimelineWidget {
                 source_out: clip.source_out,
                 is_selected: clip.selected,
                 audio_muted: clip.audio_muted,
+                fade_in_ms: clip.fade_in_ms,
+                fade_out_ms: clip.fade_out_ms,
+                fade_curve: clip.fade_curve,
             });
         }
 
@@ -238,6 +241,9 @@ impl TimelineWidget {
         if let Some(cache) = waveform_cache {
             renderer.render_waveforms(&painter, cache);
         }
+
+        // Fade curve overlays: dark gradient + curve line inside clip
+        renderer.render_fade_curves(&painter);
 
         // Selection overlays: cyan glow + white tint for selected clips.
         // Rendered AFTER filmstrips so the overlay sits on top of thumbnails,

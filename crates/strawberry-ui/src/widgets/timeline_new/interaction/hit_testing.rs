@@ -219,6 +219,9 @@ mod tests {
             source_out: Duration::from_secs(duration_secs),
             audio_muted: false,
             audio_volume: 1.0,
+            fade_in_ms: 0,
+            fade_out_ms: 0,
+            fade_curve: strawberry_core::components::audio::FadeCurve::Linear,
         }
     }
 

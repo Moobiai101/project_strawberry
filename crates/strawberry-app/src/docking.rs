@@ -1273,6 +1273,22 @@ impl<'a> TreeBehavior<'a> {
                                         .get::<strawberry_core::components::AudioClip>(clip_entity)
                                         .map(|a| a.volume)
                                         .unwrap_or(1.0),
+                                    // Fade data from AudioFade component (defaults if absent)
+                                    fade_in_ms: self
+                                        .world
+                                        .get::<strawberry_core::components::audio::AudioFade>(clip_entity)
+                                        .map(|f| f.fade_in.as_millis() as u32)
+                                        .unwrap_or(0),
+                                    fade_out_ms: self
+                                        .world
+                                        .get::<strawberry_core::components::audio::AudioFade>(clip_entity)
+                                        .map(|f| f.fade_out.as_millis() as u32)
+                                        .unwrap_or(0),
+                                    fade_curve: self
+                                        .world
+                                        .get::<strawberry_core::components::audio::AudioFade>(clip_entity)
+                                        .map(|f| f.curve)
+                                        .unwrap_or_default(),
                                 });
                             }
                         }

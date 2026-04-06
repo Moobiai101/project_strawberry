@@ -83,9 +83,17 @@ impl Command for NormalizeAudioCommand {
             .map(|ac| ac.volume)
             .unwrap_or(1.0);
 
-        // Compute new volume: current × gain, clamped to [0.0, 4.0]
-        // 4.0 = +12dB max, beyond this is almost certainly wrong
-        let new_volume: f32 = (current_volume * self.gain_multiplier).clamp(0.0, 4.0);
+        // Set volume to the gain directly (absolute, not relative).
+        //
+        // IMPORTANT: The gain_multiplier is computed from the raw source audio's
+        // LUFS measurement (at volume=1.0). It already represents the correct
+        // absolute volume level to hit the target LUFS. Multiplying with
+        // current_volume would compound each click, spiraling volume to zero.
+        //
+        // Example: source is -12 LUFS, target is -14 LUFS
+        //   gain = 10^((-14 - (-12)) / 20) = 0.794
+        //   → set volume to 0.794 (not 0.27 * 0.794 = 0.21)
+        let new_volume: f32 = self.gain_multiplier.clamp(0.0, 4.0);
 
         // Apply to AudioClip (auto-insert if not present)
         if let Some(mut audio_clip) = world.get_mut::<AudioClip>(entity) {
@@ -186,7 +194,7 @@ mod tests {
         let undo = cmd.execute(&mut world).unwrap();
 
         let volume: f32 = world.get::<AudioClip>(entity).unwrap().volume;
-        assert!((volume - 1.0).abs() < 0.001, "0.5 × 2.0 = 1.0, got {}", volume);
+        assert!((volume - 2.0).abs() < 0.001, "gain=2.0 → volume=2.0 (absolute), got {}", volume);
 
         // Verify undo data
         match undo {

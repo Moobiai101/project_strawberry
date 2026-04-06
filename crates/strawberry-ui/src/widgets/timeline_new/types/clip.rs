@@ -3,6 +3,7 @@
 //! Contains `ClipInfo` for rendering and `FilmstripAssetTextures` for thumbnails.
 
 use std::time::Duration;
+use strawberry_core::components::audio::FadeCurve;
 
 // ============================================================================
 // CLIP DATA
@@ -38,6 +39,12 @@ pub struct ClipInfo {
     pub audio_muted: bool,
     /// Clip audio volume 0.0–2.0 (for icon opacity hint)
     pub audio_volume: f32,
+    /// Fade-in duration in milliseconds (0 = no fade-in)
+    pub fade_in_ms: u32,
+    /// Fade-out duration in milliseconds (0 = no fade-out)
+    pub fade_out_ms: u32,
+    /// Fade curve shape (for visual overlay rendering)
+    pub fade_curve: FadeCurve,
 }
 
 // ============================================================================
@@ -90,6 +97,9 @@ mod tests {
             source_out: Duration::from_secs(10),
             audio_muted: false,
             audio_volume: 1.0,
+            fade_in_ms: 0,
+            fade_out_ms: 0,
+            fade_curve: FadeCurve::Linear,
         };
         assert_eq!(clip.name, "Test Clip");
         assert_eq!(clip.duration.as_secs(), 10);

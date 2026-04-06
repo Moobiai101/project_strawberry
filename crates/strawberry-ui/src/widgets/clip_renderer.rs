@@ -26,6 +26,7 @@
 
 use egui::{pos2, vec2, Align2, Color32, FontId, Mesh, Painter, Rect, Rounding, Shape, Stroke};
 use std::time::Duration;
+use strawberry_core::components::audio::FadeCurve;
 
 // ============================================================================
 // VISIBLE CLIP RECT
@@ -64,6 +65,12 @@ pub struct VisibleClipRect {
     pub is_selected: bool,
     /// Whether this clip's audio is muted (for 🔊/🔇 icon)
     pub audio_muted: bool,
+    /// Fade-in duration in milliseconds (0 = no fade)
+    pub fade_in_ms: u32,
+    /// Fade-out duration in milliseconds (0 = no fade)
+    pub fade_out_ms: u32,
+    /// Fade curve shape for visual overlay
+    pub fade_curve: FadeCurve,
 }
 
 // ============================================================================
@@ -433,6 +440,13 @@ impl BatchedClipRenderer {
         let mut shapes: Vec<Shape> = Vec::new();
 
         for clip in &self.visible_clips {
+            // Only render waveforms on audio-only clips (no filmstrip).
+            // Video clips with filmstrips already have visual content — showing
+            // waveforms over the filmstrip is visually cluttered and incorrect.
+            if clip.has_filmstrip {
+                continue;
+            }
+
             let asset_uuid: uuid::Uuid = match clip.asset_uuid {
                 Some(uuid) => uuid,
                 None => continue, // No audio asset
@@ -506,6 +520,147 @@ impl BatchedClipRenderer {
                         pos2(x, wave_center + half_bar),
                     ],
                     wave_stroke,
+                ));
+            }
+        }
+
+        if !shapes.is_empty() {
+            painter.extend(shapes);
+        }
+    }
+
+    /// Render fade curve overlays on clips that have fade-in or fade-out.
+    ///
+    /// ## Visual Design
+    /// - Semi-transparent dark overlay in faded regions (shows "this part is quieter")
+    /// - White curve line tracing the exact fade shape
+    /// - Both rendered as batched shapes (one extend call total)
+    ///
+    /// ## Performance
+    /// - Skips clips with zero fades (most clips)
+    /// - 24 line segments per curve (smooth but cheap)
+    /// - Single `painter.extend()` call for all fade overlays
+    /// - Pure arithmetic — no allocations beyond the shapes Vec
+    pub fn render_fade_curves(&self, painter: &Painter) {
+        if self.visible_clips.is_empty() {
+            return;
+        }
+
+        let mut shapes: Vec<Shape> = Vec::new();
+
+        /// Number of line segments per fade curve. 24 gives smooth curves
+        /// without excessive geometry. At 60fps this is ~1440 vertices/second
+        /// for a single clip with both fades — negligible GPU cost.
+        const CURVE_SEGMENTS: usize = 24;
+
+        for clip in &self.visible_clips {
+            let clip_width: f32 = clip.rect.width();
+            let clip_duration_ms: f64 = (clip.source_out - clip.source_in)
+                .as_secs_f64()
+                * 1000.0;
+            if clip_duration_ms <= 0.0 || clip_width < 10.0 {
+                continue;
+            }
+
+            let clip_top: f32 = clip.rect.top();
+            let clip_bottom: f32 = clip.rect.bottom();
+            let clip_height: f32 = clip_bottom - clip_top;
+
+            // --- Fade-In Overlay (left edge) ---
+            if clip.fade_in_ms > 0 {
+                let fade_ratio: f64 = (clip.fade_in_ms as f64 / clip_duration_ms).min(1.0);
+                let fade_width_px: f32 = (fade_ratio as f32 * clip_width).max(4.0);
+                let fade_left: f32 = clip.rect.left();
+
+                // Dark overlay polygon: trapezoidal shape from bottom-left
+                // to curve line, showing the "quiet" region
+                let overlay_color = Color32::from_rgba_unmultiplied(0, 0, 0, 80);
+                let mut overlay_points: Vec<egui::Pos2> = Vec::with_capacity(CURVE_SEGMENTS + 3);
+
+                // Start at bottom-left corner
+                overlay_points.push(pos2(fade_left, clip_bottom));
+
+                // Walk along bottom to fade end
+                overlay_points.push(pos2(fade_left + fade_width_px, clip_bottom));
+
+                // Walk up along curve line (right to left)
+                for i in (0..=CURVE_SEGMENTS).rev() {
+                    let t: f32 = i as f32 / CURVE_SEGMENTS as f32;
+                    let curve_val: f32 = clip.fade_curve.apply(t);
+                    let x: f32 = fade_left + t * fade_width_px;
+                    // curve_val=0 → clip_bottom (silent), curve_val=1 → clip_top (full volume)
+                    let y: f32 = clip_bottom - curve_val * clip_height;
+                    overlay_points.push(pos2(x, y));
+                }
+
+                shapes.push(Shape::convex_polygon(
+                    overlay_points,
+                    overlay_color,
+                    Stroke::NONE,
+                ));
+
+                // White curve line on top of the overlay
+                let curve_color = Color32::from_rgba_unmultiplied(255, 255, 255, 160);
+                let mut line_points: Vec<egui::Pos2> = Vec::with_capacity(CURVE_SEGMENTS + 1);
+                for i in 0..=CURVE_SEGMENTS {
+                    let t: f32 = i as f32 / CURVE_SEGMENTS as f32;
+                    let curve_val: f32 = clip.fade_curve.apply(t);
+                    let x: f32 = fade_left + t * fade_width_px;
+                    let y: f32 = clip_bottom - curve_val * clip_height;
+                    line_points.push(pos2(x, y));
+                }
+                shapes.push(Shape::line(
+                    line_points,
+                    Stroke::new(1.5, curve_color),
+                ));
+            }
+
+            // --- Fade-Out Overlay (right edge) ---
+            if clip.fade_out_ms > 0 {
+                let fade_ratio: f64 = (clip.fade_out_ms as f64 / clip_duration_ms).min(1.0);
+                let fade_width_px: f32 = (fade_ratio as f32 * clip_width).max(4.0);
+                let fade_right: f32 = clip.rect.right();
+
+                let overlay_color = Color32::from_rgba_unmultiplied(0, 0, 0, 80);
+                let mut overlay_points: Vec<egui::Pos2> = Vec::with_capacity(CURVE_SEGMENTS + 3);
+
+                // Start at bottom-right corner
+                overlay_points.push(pos2(fade_right, clip_bottom));
+
+                // Walk along bottom to fade start
+                overlay_points.push(pos2(fade_right - fade_width_px, clip_bottom));
+
+                // Walk up along curve line (left to right)
+                // For fade-out: t=0 is at fade_start (full volume), t=1 is at fade_right (silent)
+                for i in 0..=CURVE_SEGMENTS {
+                    let t: f32 = i as f32 / CURVE_SEGMENTS as f32;
+                    // Invert: at t=0 (start of fade region) volume is full,
+                    // at t=1 (end of clip) volume is zero
+                    let curve_val: f32 = clip.fade_curve.apply(1.0 - t);
+                    let x: f32 = (fade_right - fade_width_px) + t * fade_width_px;
+                    let y: f32 = clip_bottom - curve_val * clip_height;
+                    overlay_points.push(pos2(x, y));
+                }
+
+                shapes.push(Shape::convex_polygon(
+                    overlay_points,
+                    overlay_color,
+                    Stroke::NONE,
+                ));
+
+                // White curve line
+                let curve_color = Color32::from_rgba_unmultiplied(255, 255, 255, 160);
+                let mut line_points: Vec<egui::Pos2> = Vec::with_capacity(CURVE_SEGMENTS + 1);
+                for i in 0..=CURVE_SEGMENTS {
+                    let t: f32 = i as f32 / CURVE_SEGMENTS as f32;
+                    let curve_val: f32 = clip.fade_curve.apply(1.0 - t);
+                    let x: f32 = (fade_right - fade_width_px) + t * fade_width_px;
+                    let y: f32 = clip_bottom - curve_val * clip_height;
+                    line_points.push(pos2(x, y));
+                }
+                shapes.push(Shape::line(
+                    line_points,
+                    Stroke::new(1.5, curve_color),
                 ));
             }
         }
@@ -635,6 +790,9 @@ mod tests {
             source_out: Duration::from_secs(5),
             is_selected: false,
             audio_muted: false,
+            fade_in_ms: 0,
+            fade_out_ms: 0,
+            fade_curve: FadeCurve::Linear,
         });
 
         assert_eq!(renderer.clips().len(), 1);
@@ -658,6 +816,9 @@ mod tests {
             source_out: Duration::from_secs(5),
             is_selected: false,
             audio_muted: false,
+            fade_in_ms: 0,
+            fade_out_ms: 0,
+            fade_curve: FadeCurve::Linear,
         });
 
         renderer.clear();
