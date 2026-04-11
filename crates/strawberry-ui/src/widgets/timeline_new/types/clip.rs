@@ -45,6 +45,9 @@ pub struct ClipInfo {
     pub fade_out_ms: u32,
     /// Fade curve shape (for visual overlay rendering)
     pub fade_curve: FadeCurve,
+    /// Keyframe automation overlay data for timeline curve rendering.
+    /// None = no automation on this clip (zero rendering cost).
+    pub keyframe_overlay: Option<crate::widgets::keyframe_overlay::KeyframeOverlayData>,
 }
 
 // ============================================================================
@@ -100,6 +103,7 @@ mod tests {
             fade_in_ms: 0,
             fade_out_ms: 0,
             fade_curve: FadeCurve::Linear,
+            keyframe_overlay: None,
         };
         assert_eq!(clip.name, "Test Clip");
         assert_eq!(clip.duration.as_secs(), 10);

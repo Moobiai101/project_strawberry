@@ -222,6 +222,7 @@ mod tests {
             fade_in_ms: 0,
             fade_out_ms: 0,
             fade_curve: strawberry_core::components::audio::FadeCurve::Linear,
+            keyframe_overlay: None,
         }
     }
 

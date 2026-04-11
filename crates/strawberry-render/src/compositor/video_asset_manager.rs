@@ -504,33 +504,12 @@ impl VideoAssetManager {
         source_time: Duration,
     ) -> FrameStatus {
         // =====================================================================
-        // DIAGNOSTIC: Track random-access invocations (throttled to 1/30)
-        // TODO: Remove after speed-playback bug is fixed
-        // =====================================================================
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static RA_COUNTER: AtomicU64 = AtomicU64::new(0);
-        let count = RA_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let should_log = count % 30 == 0; // Log every 30th call
-
-        if should_log {
-            tracing::info!(
-                "DIAG: random_access #{} asset={} source_time={:.3}s",
-                count,
-                &asset_uuid.to_string()[..8],
-                source_time.as_secs_f64()
-            );
-        }
-
-        // =====================================================================
         // 1. CHECK LRU CACHE FIRST (0.01ms - instant!)
         // =====================================================================
         let frame_number = (source_time.as_secs_f64() * 30.0) as u32; // Approximate
         let cache_key = (asset_uuid, frame_number);
 
         if let Some(cached_frame) = self.frame_cache.get(&cache_key) {
-            if should_log {
-                tracing::info!("DIAG: LRU cache HIT for frame {}", frame_number);
-            }
             return FrameStatus::Ready(cached_frame.to_video_frame());
         }
 
@@ -538,33 +517,12 @@ impl VideoAssetManager {
         // 2. TRY IMAGE SEQUENCE PROXY (2-5ms)
         // =====================================================================
         if let Some(ref proxy_manager) = self.proxy_manager {
-            let is_seq = proxy_manager.is_image_sequence(&asset_uuid);
-            if should_log {
-                tracing::info!("DIAG: proxy_manager.is_image_sequence = {}", is_seq);
-            }
-            if is_seq {
+            if proxy_manager.is_image_sequence(&asset_uuid) {
                 let time_secs = source_time.as_secs_f64();
-                let frame_path_opt = proxy_manager.get_frame_path(&asset_uuid, time_secs);
-                if should_log {
-                    tracing::info!(
-                        "DIAG: get_frame_path({:.3}s) = {:?}",
-                        time_secs,
-                        frame_path_opt
-                            .as_ref()
-                            .map(|p| p.file_name().unwrap_or_default())
-                    );
-                }
-                if let Some(frame_path) = frame_path_opt {
+                if let Some(frame_path) = proxy_manager.get_frame_path(&asset_uuid, time_secs) {
                     if let Some(frame) =
                         strawberry_video::service::load_frame_from_jpeg(&frame_path)
                     {
-                        if should_log {
-                            tracing::info!(
-                                "DIAG: JPEG proxy loaded OK at {:.3}s, caching as frame {}",
-                                time_secs,
-                                frame_number
-                            );
-                        }
                         // Insert into cache for next access
                         self.frame_cache.insert_video_frame(cache_key, &frame);
                         return FrameStatus::Ready(frame);
@@ -576,16 +534,11 @@ impl VideoAssetManager {
                     }
                 }
             }
-        } else if should_log {
-            tracing::info!("DIAG: NO proxy_manager available");
         }
 
         // =====================================================================
         // 3. FALLBACK: Use video decoder (slower path)
         // =====================================================================
-        if should_log {
-            tracing::info!("DIAG: falling through to service.request_frame()");
-        }
         if let Some(service) = self.services.get(&asset_uuid) {
             service.request_frame(source_time)
         } else {

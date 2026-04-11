@@ -126,6 +126,9 @@ pub struct CompositorLayer {
     pub source_time: Duration,
     /// Track index (z-order, 0 = bottom)
     pub track_index: u32,
+    /// Track entity bits — for direct Track/TrackAudio component lookup
+    /// in the audio mixer without building a separate index→entity map.
+    pub track_entity_bits: u64,
     /// Opacity (0.0 - 1.0)
     pub opacity: f32,
     /// Whether the layer has a texture ready
@@ -211,7 +214,11 @@ impl NodeTraverser {
         sorted_tracks.sort_by_key(|(_, track, _)| track.index);
 
         for (track_entity, track, track_stable_id) in sorted_tracks {
-            let mut track_node: TrackNode = TrackNode::new(*track_stable_id, track.clone());
+            let mut track_node: TrackNode = TrackNode::new_with_entity(
+                *track_stable_id,
+                track.clone(),
+                track_entity.to_bits(),
+            );
 
             // Find clips that belong to this track
             for (_clip_entity, clip, clip_stable_id, asset_ref, metadata, parent) in
@@ -286,7 +293,8 @@ impl NodeTraverser {
                             asset_uuid,
                             source_time,
                             track_index: track_node.index(),
-                            opacity: 1.0, // TODO: Get from ClipTransform
+                            track_entity_bits: track_node.entity_bits(),
+                            opacity: 1.0, // Phase 3D: Wire from ClipTransform.opacity
                             texture_id: None,
                             needs_random_access: random_access,
                             clip_speed: clip_node.speed() as f32,

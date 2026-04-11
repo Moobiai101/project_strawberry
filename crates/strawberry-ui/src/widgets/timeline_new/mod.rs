@@ -56,6 +56,7 @@ mod drawing;
 mod drawing_pipeline;
 mod handler;
 mod input_handlers;
+mod track_header;
 
 // Re-export types for convenience
 pub use interaction::{

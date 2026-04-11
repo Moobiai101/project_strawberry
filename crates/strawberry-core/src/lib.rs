@@ -38,15 +38,16 @@ pub mod systems;
 pub mod prelude {
     // Commands - re-export all command types and traits
     pub use crate::commands::{
-        import::*, playback::*, project::*, registry::*, serializable::*,
-        timeline as timeline_cmds, transform::*, Command, CommandError, CommandId, UndoData,
-        UndoEntry, UndoStack,
+        import::*, keyframe_commands::*, playback::*, project::*, registry::*,
+        serializable::*, timeline as timeline_cmds, transform::*, Command, CommandError,
+        CommandId, UndoData, UndoEntry, UndoStack,
     };
 
     // Components - re-export all component types
     pub use crate::components::{
-        timeline as timeline_components, AudioAsset, AudioClip, BlendMode, Clip, ClipTransform,
-        ColorSpace, FrameRate, PrimarySelection, Project, ProjectSettings, RenderLayer, Selected,
+        keyframe, keyframe_track, timeline as timeline_components, AudioAsset, AudioClip,
+        BlendMode, Clip, ClipTransform, ColorSpace, FrameRate, Keyframe, KeyframeInterpolation,
+        KeyframeTrack, PrimarySelection, Project, ProjectSettings, RenderLayer, Selected,
         StableId, Track, TrackType, Transform2D, VideoAsset, VideoFrame,
     };
 

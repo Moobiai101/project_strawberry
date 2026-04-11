@@ -114,8 +114,9 @@ pub fn viewport_update_system(
 use std::collections::HashSet;
 use std::time::Duration;
 use strawberry_audio::KiraMixerService;
-use strawberry_core::components::{AudioClip, Clip, StableId};
+use strawberry_core::components::{AudioClip, Clip, StableId, Track, TrackAudio};
 use strawberry_core::components::audio::{AudioFade, compute_fade_multiplier};
+use strawberry_core::components::keyframe_track::KeyframeTrack;
 use strawberry_core::resources::MasterAudioState;
 use uuid::Uuid;
 
@@ -159,13 +160,19 @@ pub fn audio_mixer_sync_system(
     mut mixer_resource: ResMut<AudioMixerResource>,
     audio_clips: Query<(&StableId, &AudioClip)>,
     audio_fades: Query<(&StableId, &AudioFade, &Clip)>,
+    keyframe_tracks: Query<(&StableId, &KeyframeTrack, &Clip)>,
     clip_timings: Query<(&StableId, &Clip)>,
+    track_query: Query<(&Track, Option<&TrackAudio>)>,
 ) {
     let mixer: &mut KiraMixerService = &mut mixer_resource.0;
 
     // Apply master volume + mute
     mixer.set_master_volume(master_audio.master_volume);
     mixer.set_master_muted(master_audio.master_muted);
+
+    // Pre-compute: does any track have solo enabled?
+    // If so, only clips on soloed tracks will play.
+    let any_track_soloed: bool = track_query.iter().any(|(t, _)| t.solo);
 
     // Pre-compute crossfade multipliers for all active layers.
     // Only does work when 2+ clips share a track_index (overlap).
@@ -180,6 +187,37 @@ pub fn audio_mixer_sync_system(
 
     for (layer_idx, layer) in active_layers.layers.iter().enumerate() {
         let asset_uuid: Uuid = layer.asset_uuid;
+
+        // ---- Track-level audio filtering ----
+        // Look up the parent track's audio state via entity bits
+        // (propagated from TrackNode during traversal).
+        let track_entity: Entity = Entity::from_bits(layer.track_entity_bits);
+        let (track_muted, track_soloed, track_volume, track_pan): (bool, bool, f32, f32) =
+            if let Ok((track, track_audio)) = track_query.get(track_entity) {
+                let (vol, pan): (f32, f32) = track_audio
+                    .map(|ta| (ta.volume, ta.pan))
+                    .unwrap_or((1.0, 0.0));
+                (track.muted, track.solo, vol, pan)
+            } else {
+                (false, false, 1.0, 0.0)
+            };
+
+        // Skip muted tracks
+        if track_muted {
+            // Stop any playing audio for this clip since track is muted
+            if mixer.has_clip(&asset_uuid) {
+                mixer.stop_clip(&asset_uuid);
+            }
+            continue;
+        }
+
+        // Solo logic: when any track is soloed, skip clips on non-soloed tracks
+        if any_track_soloed && !track_soloed {
+            if mixer.has_clip(&asset_uuid) {
+                mixer.stop_clip(&asset_uuid);
+            }
+            continue;
+        }
 
         if !mixer.has_clip(&asset_uuid) {
             continue;
@@ -197,11 +235,15 @@ pub fn audio_mixer_sync_system(
             mixer.set_clip_playback_rate(&asset_uuid, effective_speed);
         }
 
-        let (volume, pan, muted) = find_audio_clip_params(&audio_clips, layer.clip_uuid);
+        let (clip_volume, clip_pan, clip_muted) = find_audio_clip_params(&audio_clips, layer.clip_uuid);
 
         // Apply fade multiplier (1.0 if no AudioFade component)
         let fade_multiplier: f32 =
             find_fade_multiplier(&audio_fades, layer.clip_uuid, layer.source_time);
+
+        // Apply keyframe automation (1.0/0.0 if no KeyframeTrack or no keyframes)
+        let (kf_volume, kf_pan): (f32, f32) =
+            find_keyframe_automation(&keyframe_tracks, layer.clip_uuid, layer.source_time);
 
         // Apply crossfade multiplier (1.0 if no overlap on this track)
         let crossfade_mult: f32 = crossfade_multipliers
@@ -209,9 +251,13 @@ pub fn audio_mixer_sync_system(
             .copied()
             .unwrap_or(1.0);
 
-        let effective_volume: f32 = volume * fade_multiplier * crossfade_mult;
+        // Combine: clip × track × fade × keyframe automation × crossfade
+        let effective_volume: f32 = clip_volume * track_volume * fade_multiplier * kf_volume * crossfade_mult;
 
-        mixer.update_clip_params(&asset_uuid, effective_volume, pan, muted);
+        // Combine pan: clip + track + keyframe automation (additive, clamped)
+        let effective_pan: f32 = (clip_pan + track_pan + kf_pan).clamp(-1.0, 1.0);
+
+        mixer.update_clip_params(&asset_uuid, effective_volume, effective_pan, clip_muted);
     }
 
     // Stop clips that left the playhead
@@ -271,6 +317,36 @@ fn find_fade_multiplier(
         }
     }
     1.0 // No AudioFade → no attenuation
+}
+
+/// Find keyframe automation values for a clip.
+///
+/// Returns (volume_multiplier, pan_offset). Defaults to (1.0, 0.0)
+/// when no KeyframeTrack is present (zero overhead for non-automated clips).
+///
+/// ## Performance
+/// - Only iterates KeyframeTrack query for clips with the component (lazy insertion)
+/// - `evaluate()` uses binary search O(log n) — typically <3 comparisons
+fn find_keyframe_automation(
+    keyframe_tracks: &Query<(&StableId, &KeyframeTrack, &Clip)>,
+    clip_uuid: Uuid,
+    source_time: Duration,
+) -> (f32, f32) {
+    use strawberry_core::components::keyframe_track::property_ids;
+
+    for (stable_id, track, clip) in keyframe_tracks.iter() {
+        if stable_id.uuid() == clip_uuid {
+            // Compute clip-local time relative to source_in
+            let clip_local_time_secs: f64 = source_time
+                .saturating_sub(clip.source_in)
+                .as_secs_f64();
+
+            let volume: f32 = track.evaluate(property_ids::VOLUME, clip_local_time_secs, 1.0);
+            let pan: f32 = track.evaluate(property_ids::PAN, clip_local_time_secs, 0.0);
+            return (volume, pan);
+        }
+    }
+    (1.0, 0.0) // No KeyframeTrack → passthrough
 }
 
 /// Compute crossfade volume multipliers for all active layers.

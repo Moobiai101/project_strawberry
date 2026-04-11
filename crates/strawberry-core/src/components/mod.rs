@@ -11,6 +11,15 @@ pub use audio::*;
 pub mod waveform;
 pub use waveform::*;
 
+pub mod track_audio;
+pub use track_audio::*;
+
+pub mod keyframe;
+pub use keyframe::*;
+
+pub mod keyframe_track;
+pub use keyframe_track::*;
+
 use bevy_ecs::component::Component;
 use chrono::{DateTime, Utc};
 use glam::{UVec2, Vec2};

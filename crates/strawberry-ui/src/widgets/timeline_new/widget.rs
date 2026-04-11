@@ -28,7 +28,7 @@ pub const AUDIO_TRACK_HEIGHT: f32 = 28.0;
 pub const RULER_HEIGHT: f32 = 24.0;
 
 /// Track header width (for track name/buttons)
-pub const TRACK_HEADER_WIDTH: f32 = 0.0; // Hidden for now
+pub const TRACK_HEADER_WIDTH: f32 = 32.0; // CapCut-style: icon-only column
 
 /// Playhead width
 pub const PLAYHEAD_WIDTH: f32 = 2.0;

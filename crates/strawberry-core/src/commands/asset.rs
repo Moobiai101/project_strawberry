@@ -368,10 +368,18 @@ impl Command for AddAssetToTimelineCommand {
             )
         };
 
-        // Get frame rate for snapping (default to 30 if playhead exists, else use asset rate)
-        let frame_rate: f64 = if world.get_resource::<Playhead>().is_some() {
-            // TODO: Get from active timeline's frame rate when available
-            30.0
+        // Get frame rate for snapping from the active timeline.
+        // The Timeline component stores the user's chosen frame rate.
+        // Falls back to 30fps if no timeline exists yet, and to the
+        // asset's native frame rate if no playhead exists.
+        let frame_rate: f64 = if world.get_resource::<crate::resources::Playhead>().is_some() {
+            // Try to read frame rate from active timeline
+            let active_timeline_fr: Option<f64> = world
+                .get_resource::<crate::components::timeline::ActiveTimeline>()
+                .and_then(|active| active.get())
+                .and_then(|entity| world.get::<crate::components::timeline::Timeline>(entity))
+                .map(|tl| tl.frame_rate.as_f64());
+            active_timeline_fr.unwrap_or(30.0)
         } else {
             asset_frame_rate
         };
@@ -648,7 +656,11 @@ impl Command for AddAssetToTimelineCommand {
                 // NOTE: Keep auto_created_track_uuid — needed for redo to recreate with same identity
             }
 
-            // TODO: If we auto-created timeline, consider cleaning it up if empty
+            // We intentionally do NOT clean up auto-created timelines on undo.
+            // Reason: the undo stack still references the timeline entity, and
+            // other commands in the same undo batch may depend on it. Removing
+            // it would invalidate those references and cause redo failures.
+            // The timeline is lightweight (just metadata) and harmless when empty.
 
             tracing::info!(
                 "Undid add to timeline for asset {}",

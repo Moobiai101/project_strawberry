@@ -3,6 +3,7 @@
 pub mod aspect_ratio_dropdown;
 pub mod clip_renderer;
 pub mod filmstrip;
+pub mod keyframe_overlay;
 pub mod status_bar;
 pub mod timeline_new;
 pub mod transport;
@@ -13,6 +14,10 @@ pub mod viewport;
 mod timeline_legacy;
 
 pub use clip_renderer::{BatchedClipRenderer, VisibleClipRect};
+pub use keyframe_overlay::{
+    KeyframeOverlayData, PropertyKeyframeData, VOLUME_CURVE_COLOR, PAN_CURVE_COLOR,
+    OPACITY_CURVE_COLOR, render_keyframe_overlays,
+};
 
 pub use filmstrip::{
     calculate_thumbnail_count, get_lod_for_pixels_per_second, FilmstripConfig, FilmstripRenderer,

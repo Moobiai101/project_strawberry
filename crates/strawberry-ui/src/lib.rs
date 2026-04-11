@@ -29,3 +29,8 @@ pub use widgets::viewport::{
     render_clip_quad, render_clip_quad_identity, GizmoInputHandler, GizmoInputResult, GizmoOverlay,
     SelectedElementData, ViewportWidget, VisibleClip,
 };
+pub use widgets::keyframe_overlay::{
+    KeyframeOverlayData, PropertyKeyframeData,
+    VOLUME_CURVE_COLOR, PAN_CURVE_COLOR, OPACITY_CURVE_COLOR,
+    render_keyframe_overlays,
+};

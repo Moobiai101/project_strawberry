@@ -13,12 +13,12 @@ pub enum RenderError {
 
 /// Main render pipeline
 pub struct RenderPipeline {
-    // TODO: wgpu device, queue, etc.
+    // Phase 4: wgpu device, queue, shader pipeline for GPU compositing
 }
 
 impl RenderPipeline {
     pub async fn new() -> Result<Self, RenderError> {
-        // TODO: Initialize wgpu
+        // Phase 4: Initialize wgpu device and shader pipeline
         Ok(Self {})
     }
 }

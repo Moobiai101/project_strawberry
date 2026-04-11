@@ -1289,6 +1289,8 @@ impl<'a> TreeBehavior<'a> {
                                         .get::<strawberry_core::components::audio::AudioFade>(clip_entity)
                                         .map(|f| f.curve)
                                         .unwrap_or_default(),
+                                    // Keyframe automation overlay (None if no KeyframeTrack)
+                                    keyframe_overlay: self.build_keyframe_overlay(clip_entity),
                                 });
                             }
                         }
@@ -1298,6 +1300,58 @@ impl<'a> TreeBehavior<'a> {
         }
 
         clips
+    }
+
+    /// Build keyframe overlay data for a clip entity.
+    ///
+    /// Reads `KeyframeTrack` from ECS and converts to `KeyframeOverlayData`
+    /// for the timeline renderer. Returns `None` for clips without automation
+    /// (zero cost — no allocation, no iteration).
+    fn build_keyframe_overlay(
+        &self,
+        clip_entity: Entity,
+    ) -> Option<strawberry_ui::KeyframeOverlayData> {
+        use strawberry_core::components::keyframe_track::{property_ids, KeyframeTrack};
+        use strawberry_ui::{
+            KeyframeOverlayData, PropertyKeyframeData,
+            VOLUME_CURVE_COLOR, PAN_CURVE_COLOR,
+        };
+
+        let track: &KeyframeTrack = self.world.get::<KeyframeTrack>(clip_entity)?;
+
+        let mut properties: Vec<PropertyKeyframeData> = Vec::new();
+
+        // Volume automation curve
+        if let Some(kfs) = track.keyframes(property_ids::VOLUME) {
+            if !kfs.is_empty() {
+                properties.push(PropertyKeyframeData {
+                    keyframes: kfs.to_vec(),
+                    color: VOLUME_CURVE_COLOR,
+                    value_min: 0.0,
+                    value_max: 2.0,
+                    default_value: 1.0,
+                });
+            }
+        }
+
+        // Pan automation curve
+        if let Some(kfs) = track.keyframes(property_ids::PAN) {
+            if !kfs.is_empty() {
+                properties.push(PropertyKeyframeData {
+                    keyframes: kfs.to_vec(),
+                    color: PAN_CURVE_COLOR,
+                    value_min: -1.0,
+                    value_max: 1.0,
+                    default_value: 0.0,
+                });
+            }
+        }
+
+        if properties.is_empty() {
+            None
+        } else {
+            Some(KeyframeOverlayData { properties })
+        }
     }
 
     fn render_inspector(&mut self, ui: &mut egui::Ui) {
@@ -1520,6 +1574,12 @@ impl<'a> TreeBehavior<'a> {
                 };
                 if let Some(entity) = selected_entity {
                     crate::audio_inspector::render_clip_audio_controls(
+                        ui,
+                        &self.world,
+                        clip_uuid,
+                        entity,
+                    );
+                    crate::keyframe_inspector::render_keyframe_inspector(
                         ui,
                         &self.world,
                         clip_uuid,

@@ -9,6 +9,7 @@
 
 mod audio_inspector;
 mod docking;
+mod keyframe_inspector;
 mod viewport_renderer;
 
 use anyhow::Result;
@@ -585,13 +586,7 @@ impl eframe::App for StrawberryApp {
         // This is a coarse check - the detailed "can_scrub" logic lives in
         // timeline.rs, but for compositor optimization purposes, detecting any
         // primary button drag is sufficient.
-        let (pointer_dragging, primary_down, any_down) = ctx.input(|i| {
-            (
-                i.pointer.is_decidedly_dragging(),
-                i.pointer.primary_down(),
-                i.pointer.any_down(),
-            )
-        });
+        let primary_down: bool = ctx.input(|i| i.pointer.primary_down());
 
         {
             let mut scrub_state = self.world.resource_mut::<ScrubState>();

@@ -13,6 +13,7 @@ use egui::{pos2, vec2, Rect, Response, Sense, Ui, Widget};
 use std::time::Duration;
 
 use super::rendering::colors;
+use super::track_header::TrackHeaderAction;
 use super::types::DragOrigin;
 use super::widget::{TimelineWidget, RULER_HEIGHT, SCROLLBAR_HEIGHT, TRACK_HEADER_WIDTH};
 use super::TimelineResponse;
@@ -93,13 +94,14 @@ impl TimelineWidget {
         // =====================================================================
         // DRAWING
         // =====================================================================
-        if self.clips.is_empty() {
+        let header_actions: Vec<TrackHeaderAction> = if self.clips.is_empty() {
             // CapCut-style empty state: full clean area with ruler at bottom
             let full_content_rect: Rect = Rect::from_min_size(
                 rect.min,
                 vec2(rect.width(), rect.height() - SCROLLBAR_HEIGHT),
             );
             self.draw_capcut_empty_state(&painter, full_content_rect);
+            Vec::new() // No headers in empty state
         } else {
             // Normal timeline with ruler at top
             self.draw_ruler(ui, ruler_rect);
@@ -111,7 +113,14 @@ impl TimelineWidget {
             let hovered_gap: Option<(u64, u64)> = self.detect_hovered_gap(ui, content_rect);
             self.draw_transition_zones(ui, content_rect, hovered_gap);
             self.draw_playhead(ui, ruler_rect, content_rect);
-        }
+
+            // CapCut-style track headers — minimal icon column
+            let header_rect: Rect = Rect::from_min_size(
+                pos2(rect.left(), rect.top() + RULER_HEIGHT),
+                vec2(TRACK_HEADER_WIDTH, content_rect.height()),
+            );
+            self.draw_track_headers(ui, header_rect)
+        };
 
         // Hidden scrollbar
         let scrollbar_rect: Rect = Rect::from_min_size(
@@ -180,10 +189,25 @@ impl TimelineWidget {
             drag_origin,
         );
 
-        // Track button toggles (placeholder)
-        let toggle_track_mute: Option<(u64, bool)> = None;
-        let toggle_track_solo: Option<(u64, bool)> = None;
+        // Process track header actions into response fields
+        let mut toggle_track_mute: Option<(u64, bool)> = None;
+        let mut toggle_track_solo: Option<(u64, bool)> = None;
         let toggle_track_lock: Option<(u64, bool)> = None;
+        let mut selected_track: Option<u64> = None;
+
+        for action in header_actions {
+            match action {
+                TrackHeaderAction::SelectTrack(bits) => {
+                    selected_track = Some(bits);
+                }
+                TrackHeaderAction::ToggleMute(bits, new_state) => {
+                    toggle_track_mute = Some((bits, new_state));
+                }
+                TrackHeaderAction::ToggleSolo(bits, new_state) => {
+                    toggle_track_solo = Some((bits, new_state));
+                }
+            }
+        }
 
         TimelineResponse {
             response,
@@ -210,6 +234,7 @@ impl TimelineWidget {
             active_tool: self.active_tool,
             is_scrubbing,
             toggle_clip_mute,
+            selected_track,
         }
     }
 

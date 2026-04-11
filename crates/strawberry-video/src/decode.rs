@@ -136,6 +136,8 @@ pub struct VideoDecoder {
     /// Default decode resolution
     default_width: u32,
     default_height: u32,
+    /// Frame rate used for frame_number estimation (configurable, defaults to 30fps)
+    frame_rate: f64,
 }
 
 impl VideoDecoder {
@@ -145,6 +147,7 @@ impl VideoDecoder {
             ffmpeg: Arc::new(FFmpeg::new()?),
             default_width: 1920,
             default_height: 1080,
+            frame_rate: 30.0,
         })
     }
 
@@ -154,6 +157,7 @@ impl VideoDecoder {
             ffmpeg,
             default_width: 1920,
             default_height: 1080,
+            frame_rate: 30.0,
         }
     }
 
@@ -161,6 +165,14 @@ impl VideoDecoder {
     pub fn set_default_resolution(&mut self, width: u32, height: u32) {
         self.default_width = width;
         self.default_height = height;
+    }
+
+    /// Set frame rate for accurate frame_number calculation
+    ///
+    /// Called after probing metadata so frame numbers are correct.
+    /// Defaults to 30fps if never called.
+    pub fn set_frame_rate(&mut self, frame_rate: f64) {
+        self.frame_rate = if frame_rate > 0.0 { frame_rate } else { 30.0 };
     }
 
     /// Get video metadata
@@ -193,8 +205,7 @@ impl VideoDecoder {
         }
 
         let data = self.ffmpeg.decode_frame(path, timestamp, width, height)?;
-        let frame_rate = 30.0; // TODO: Get from metadata
-        let frame_number = (timestamp.as_secs_f64() * frame_rate) as u64;
+        let frame_number = (timestamp.as_secs_f64() * self.frame_rate) as u64;
 
         Ok(VideoFrame::new(
             data,
@@ -237,15 +248,14 @@ impl VideoDecoder {
         let raw_frames = self
             .ffmpeg
             .decode_frames(path, start, count, width, height)?;
-        let frame_rate = 30.0; // TODO: Get from metadata
-        let frame_duration = Duration::from_secs_f64(1.0 / frame_rate);
+        let frame_duration = Duration::from_secs_f64(1.0 / self.frame_rate);
 
         let frames = raw_frames
             .into_iter()
             .enumerate()
             .map(|(i, data)| {
                 let timestamp = start + frame_duration * i as u32;
-                let frame_number = (timestamp.as_secs_f64() * frame_rate) as u64;
+                let frame_number = (timestamp.as_secs_f64() * self.frame_rate) as u64;
                 VideoFrame::new(data, width, height, timestamp, frame_number)
             })
             .collect();

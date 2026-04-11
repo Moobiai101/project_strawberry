@@ -71,6 +71,8 @@ pub struct VisibleClipRect {
     pub fade_out_ms: u32,
     /// Fade curve shape for visual overlay
     pub fade_curve: FadeCurve,
+    /// Keyframe automation overlay data (None = no automation on this clip)
+    pub keyframe_overlay: Option<super::keyframe_overlay::KeyframeOverlayData>,
 }
 
 // ============================================================================
@@ -793,6 +795,7 @@ mod tests {
             fade_in_ms: 0,
             fade_out_ms: 0,
             fade_curve: FadeCurve::Linear,
+            keyframe_overlay: None,
         });
 
         assert_eq!(renderer.clips().len(), 1);
@@ -819,6 +822,7 @@ mod tests {
             fade_in_ms: 0,
             fade_out_ms: 0,
             fade_curve: FadeCurve::Linear,
+            keyframe_overlay: None,
         });
 
         renderer.clear();

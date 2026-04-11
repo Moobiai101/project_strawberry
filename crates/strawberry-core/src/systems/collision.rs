@@ -174,11 +174,12 @@ fn calculate_auto_track_resolution(world: &mut World, track_uuid: Uuid) -> Colli
         track_entity = registry.get(&track_uuid);
     }
 
-    // For now, suggest creating a track at index 1
-    // In a full implementation, we'd query the track index from the Track component
-    let insert_index: u32 = if track_entity.is_some() {
-        // TODO: Query actual track index and add 1
-        1
+    // Query the actual track index from the Track component
+    let insert_index: u32 = if let Some(entity) = track_entity {
+        world
+            .get::<crate::components::Track>(entity)
+            .map(|track| track.index + 1)
+            .unwrap_or(0)
     } else {
         0
     };

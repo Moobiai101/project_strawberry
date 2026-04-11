@@ -137,8 +137,8 @@ pub fn resolve_insertion_position(
         }
         InsertionIntent::AtPosition(secs) => *secs,
         InsertionIntent::RippleAt(secs) => {
-            // TODO Phase 2C: Implement ripple logic here
-            // For now, behaves same as AtPosition
+            // Phase 2C: Ripple insertion — will push subsequent clips to make room.
+            // Currently behaves same as AtPosition until collision system implements ripple mode.
             *secs
         }
     };

@@ -226,6 +226,7 @@ impl TimelineWidget {
                 fade_in_ms: clip.fade_in_ms,
                 fade_out_ms: clip.fade_out_ms,
                 fade_curve: clip.fade_curve,
+                keyframe_overlay: clip.keyframe_overlay.clone(),
             });
         }
 
@@ -244,6 +245,21 @@ impl TimelineWidget {
 
         // Fade curve overlays: dark gradient + curve line inside clip
         renderer.render_fade_curves(&painter);
+
+        // Keyframe automation curves: polyline + diamond markers
+        {
+            let clips: &[VisibleClipRect] = renderer.clips();
+            let rects: Vec<egui::Rect> = clips.iter().map(|c| c.rect).collect();
+            let overlays: Vec<Option<super::super::keyframe_overlay::KeyframeOverlayData>> =
+                clips.iter().map(|c| c.keyframe_overlay.clone()).collect();
+            let durations: Vec<f64> = clips
+                .iter()
+                .map(|c| c.source_out.saturating_sub(c.source_in).as_secs_f64())
+                .collect();
+            super::super::keyframe_overlay::render_keyframe_overlays(
+                &painter, &rects, &overlays, &durations,
+            );
+        }
 
         // Selection overlays: cyan glow + white tint for selected clips.
         // Rendered AFTER filmstrips so the overlay sits on top of thumbnails,

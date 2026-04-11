@@ -113,6 +113,10 @@ pub struct TimelineResponse {
     /// Clip audio mute toggled via 🔊/🔇 icon click (clip_entity_bits, current_muted_state)
     /// Consuming code should submit `SetClipAudioCommand::set_muted(!current_muted)`
     pub toggle_clip_mute: Option<(u64, bool)>,
+
+    /// Track selected by clicking its header icon (track_entity_bits).
+    /// Consuming code should update Selection resource or show track in Inspector.
+    pub selected_track: Option<u64>,
 }
 
 impl TimelineResponse {
@@ -143,6 +147,7 @@ impl TimelineResponse {
             active_tool: TimelineTool::Pointer,
             is_scrubbing: false,
             toggle_clip_mute: None,
+            selected_track: None,
         }
     }
 

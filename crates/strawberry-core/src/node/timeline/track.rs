@@ -32,6 +32,9 @@ pub struct TrackNode {
     stable_id: StableId,
     /// The track component data
     track: Track,
+    /// ECS entity bits — propagated to CompositorLayer for direct
+    /// Track/TrackAudio component lookup in the audio mixer.
+    entity_bits: u64,
     /// Child clips (populated during traversal)
     clips: Vec<ClipNode>,
 }
@@ -47,8 +50,27 @@ impl TrackNode {
         Self {
             stable_id,
             track,
+            entity_bits: 0,
             clips: Vec::new(),
         }
+    }
+
+    /// Create a new TrackNode with entity bits for audio mixer lookups.
+    pub fn new_with_entity(stable_id: StableId, track: Track, entity_bits: u64) -> Self {
+        Self {
+            stable_id,
+            track,
+            entity_bits,
+            clips: Vec::new(),
+        }
+    }
+
+    /// Get the ECS entity bits for this track.
+    ///
+    /// Used by CompositorLayer to enable direct component lookups
+    /// in the audio mixer sync system.
+    pub fn entity_bits(&self) -> u64 {
+        self.entity_bits
     }
 
     /// Add a clip to this track for processing.
