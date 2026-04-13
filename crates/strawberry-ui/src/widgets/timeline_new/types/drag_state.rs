@@ -5,7 +5,9 @@
 //! - Trim (TrimDragState)
 //! - Slip (SlipDragState)
 //! - Slide (SlideDragState)
+//! - Keyframe (KeyframeDragState)
 
+use egui::Rect;
 use std::time::Duration;
 
 // ============================================================================
@@ -37,6 +39,9 @@ pub enum DragOrigin {
     },
     /// Drag started on clip body - do move
     ClipBody,
+    /// Drag started on a keyframe diamond - do keyframe value/time edit.
+    /// Higher priority than ClipBody, lower than TrimEdge.
+    KeyframeDiamond,
     /// Drag started on empty area - do selection or nothing
     Empty,
 }
@@ -163,6 +168,43 @@ pub struct SlideDragState {
     /// Current delta offset (can be negative)
     pub delta_millis: i64,
     /// Whether slide is active
+    pub is_active: bool,
+}
+
+// ============================================================================
+// KEYFRAME DRAG STATE
+// ============================================================================
+
+/// Drag state for keyframe diamond dragging.
+///
+/// Tracks which keyframe is being dragged and its original values.
+/// Vertical drag = value change, horizontal drag = time change.
+/// Matches DaVinci Resolve and After Effects keyframe editing.
+#[derive(Debug, Clone)]
+pub struct KeyframeDragState {
+    /// Entity bits of the clip owning the keyframe
+    pub clip_entity_bits: u64,
+    /// Property index (0=volume, 1=pan)
+    pub property_index: usize,
+    /// Keyframe index within the property's sorted list
+    pub keyframe_index: usize,
+    /// Original time before drag started (for undo)
+    pub original_time_secs: f64,
+    /// Original value before drag started (for undo)
+    pub original_value: f32,
+    /// Current dragged time
+    pub current_time_secs: f64,
+    /// Current dragged value
+    pub current_value: f32,
+    /// Value min for this property
+    pub value_min: f32,
+    /// Value max for this property
+    pub value_max: f32,
+    /// Source duration in seconds (for time mapping)
+    pub source_duration_secs: f64,
+    /// Draw rect of the clip (for coordinate mapping)
+    pub draw_rect: Rect,
+    /// Whether drag is active
     pub is_active: bool,
 }
 

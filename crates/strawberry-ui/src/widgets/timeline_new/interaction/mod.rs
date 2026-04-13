@@ -9,6 +9,7 @@
 //! - `validation`: 5-stage movement validation chain (frame snap, trim clamp, track clamp)
 
 pub mod hit_testing;
+pub mod keyframe_drag;
 pub mod tools;
 pub mod validation;
 
@@ -16,4 +17,5 @@ pub mod validation;
 pub use hit_testing::{
     hit_test_clip, hit_test_clip_edge, hit_test_gap, ClipHit, GapHit, TrimHit, TRIM_HANDLE_WIDTH,
 };
+pub use keyframe_drag::{hit_test_keyframe_diamond, screen_pos_to_keyframe_value, KeyframeHit};
 pub use tools::TimelineTool;

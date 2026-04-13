@@ -193,6 +193,17 @@ impl TimelineWidget {
                         TimelineTool::Pointer => {
                             if self.hit_test_clip_edge(pointer_pos, content_rect).is_some() {
                                 ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                            } else if super::interaction::hit_test_keyframe_diamond(
+                                pointer_pos,
+                                content_rect,
+                                &self.clips,
+                                &self.tracks,
+                                self.zoom,
+                                self.scroll_x,
+                            )
+                            .is_some()
+                            {
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::Move);
                             }
                         }
                     }

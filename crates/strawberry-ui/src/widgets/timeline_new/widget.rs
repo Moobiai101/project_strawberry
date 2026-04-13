@@ -10,8 +10,8 @@ use uuid::Uuid;
 
 use super::interaction::TimelineTool;
 use super::types::{
-    ClipDragState, ClipInfo, FilmstripAssetTextures, SlideDragState, SlipDragState, TrackInfo,
-    TrimDragState,
+    ClipDragState, ClipInfo, FilmstripAssetTextures, KeyframeDragState, SlideDragState,
+    SlipDragState, TrackInfo, TrimDragState,
 };
 
 // ============================================================================
@@ -140,6 +140,9 @@ pub struct TimelineWidget {
     /// Pre-computed waveform peak cache for audio waveform rendering.
     /// Cheaply cloned from KiraMixerService (Arc<WaveformPeaks> inside).
     pub(crate) waveform_cache: Option<strawberry_core::components::waveform::WaveformCache>,
+
+    /// Current keyframe diamond drag state (for interactive automation editing)
+    pub(crate) keyframe_drag_state: Option<KeyframeDragState>,
 }
 
 impl Default for TimelineWidget {
@@ -171,6 +174,7 @@ impl TimelineWidget {
             centered_playhead: true, // Default to centered playhead mode
             filmstrip_textures: HashMap::new(),
             waveform_cache: None,
+            keyframe_drag_state: None,
         }
     }
 
@@ -293,6 +297,12 @@ impl TimelineWidget {
     /// not the actual peak data.
     pub fn with_waveform_cache(mut self, cache: strawberry_core::components::waveform::WaveformCache) -> Self {
         self.waveform_cache = Some(cache);
+        self
+    }
+
+    /// Set keyframe drag state (for persisting drag state between frames)
+    pub fn with_keyframe_drag_state(mut self, state: Option<KeyframeDragState>) -> Self {
+        self.keyframe_drag_state = state;
         self
     }
 

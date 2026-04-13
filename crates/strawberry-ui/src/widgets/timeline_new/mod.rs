@@ -56,6 +56,7 @@ mod drawing;
 mod drawing_pipeline;
 mod handler;
 mod input_handlers;
+mod keyframe_drag_handler;
 mod track_header;
 
 // Re-export types for convenience
@@ -69,8 +70,9 @@ pub use rendering::{
 };
 pub use response::TimelineResponse;
 pub use types::{
-    ClipDragState, ClipInfo, DragOrigin, FilmstripAssetTextures, SlideDragState, SlipDragState,
-    TrackInfo, TrimDragState, TrimEdge, DEFAULT_VIDEO_TRACK_HEIGHT,
+    ClipDragState, ClipInfo, DragOrigin, FilmstripAssetTextures, KeyframeDragState,
+    SlideDragState, SlipDragState, TrackInfo, TrimDragState, TrimEdge,
+    DEFAULT_VIDEO_TRACK_HEIGHT,
 };
 pub use widget::{
     TimelineWidget, AUDIO_TRACK_HEIGHT, CLIP_GAP, MAX_ZOOM, MIN_ZOOM, PLAYHEAD_GRAB_WIDTH,

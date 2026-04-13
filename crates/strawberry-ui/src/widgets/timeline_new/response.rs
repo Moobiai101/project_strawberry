@@ -6,7 +6,9 @@ use egui::{Pos2, Response};
 use std::time::Duration;
 
 use super::interaction::TimelineTool;
-use super::types::{ClipDragState, SlideDragState, SlipDragState, TrimDragState, TrimEdge};
+use super::types::{
+    ClipDragState, KeyframeDragState, SlideDragState, SlipDragState, TrimDragState, TrimEdge,
+};
 
 // ============================================================================
 // TIMELINE RESPONSE
@@ -117,6 +119,17 @@ pub struct TimelineResponse {
     /// Track selected by clicking its header icon (track_entity_bits).
     /// Consuming code should update Selection resource or show track in Inspector.
     pub selected_track: Option<u64>,
+
+    // =========================================================================
+    // KEYFRAME EDITING
+    // =========================================================================
+    /// Keyframe edit completed via timeline diamond drag.
+    /// (clip_entity_bits, property_index, original_time_secs, new_time_secs, new_value)
+    /// property_index: 0=volume, 1=pan
+    pub keyframe_edit: Option<(u64, usize, f64, f64, f32)>,
+
+    /// Updated keyframe drag state to persist between frames.
+    pub updated_keyframe_drag_state: Option<KeyframeDragState>,
 }
 
 impl TimelineResponse {
@@ -148,6 +161,8 @@ impl TimelineResponse {
             is_scrubbing: false,
             toggle_clip_mute: None,
             selected_track: None,
+            keyframe_edit: None,
+            updated_keyframe_drag_state: None,
         }
     }
 

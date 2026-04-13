@@ -23,8 +23,8 @@ use strawberry_core::resources::{
 };
 use strawberry_ui::{
     panels::{MediaBrowserPanel, MediaBrowserResponse, SettingsPanel},
-    ClipDragState, ClipInfo, FilmstripAssetTextures, StatusBar, TimelineTool, TimelineWidget,
-    TrackInfo, TransportWidget, TrimDragState, TrimEdge, ViewportWidget,
+    ClipDragState, ClipInfo, FilmstripAssetTextures, KeyframeDragState, StatusBar, TimelineTool,
+    TimelineWidget, TrackInfo, TransportWidget, TrimDragState, TrimEdge, ViewportWidget,
 };
 
 // ============================================================================
@@ -677,6 +677,12 @@ impl<'a> TreeBehavior<'a> {
                 .unwrap_or_default()
         });
 
+        // Retrieve persisted keyframe drag state from egui memory
+        let keyframe_drag_state: Option<KeyframeDragState> = ui.memory(|mem| {
+            mem.data
+                .get_temp::<KeyframeDragState>(egui::Id::new("timeline_keyframe_drag_state"))
+        });
+
         // Build timeline clips ONCE for both filmstrip loading and widget building.
         // Previously this was called twice per frame — once here and once inside
         // build_timeline_widget() — duplicating ECS iteration over all entities.
@@ -691,7 +697,8 @@ impl<'a> TreeBehavior<'a> {
             .build_timeline_widget_with_clips(frame_rate, clips.clone())
             .with_drag_state(drag_state)
             .with_trim_state(trim_state)
-            .with_active_tool(active_tool);
+            .with_active_tool(active_tool)
+            .with_keyframe_drag_state(keyframe_drag_state);
 
         // Load filmstrip textures for visible clips (if thumbnails exist on disk)
         // Uses persistent cache to avoid per-frame disk I/O
@@ -949,6 +956,71 @@ impl<'a> TreeBehavior<'a> {
             ui.memory_mut(|mem| {
                 mem.data
                     .remove::<TrimDragState>(egui::Id::new("timeline_trim_state"));
+            });
+        }
+
+        // Handle keyframe edit from timeline diamond drag
+        if let Some((clip_entity_bits, property_index, original_time, new_time, new_value)) =
+            timeline_response.keyframe_edit
+        {
+            // Resolve clip UUID from entity bits
+            let clip_entity = bevy_ecs::entity::Entity::from_bits(clip_entity_bits);
+            if let Some(stable_id) = self.world.get::<StableId>(clip_entity) {
+                let clip_uuid: uuid::Uuid = stable_id.uuid();
+                // Map property_index to property_id string
+                let property_id: &str = match property_index {
+                    0 => strawberry_core::components::keyframe_track::property_ids::VOLUME,
+                    1 => strawberry_core::components::keyframe_track::property_ids::PAN,
+                    _ => "unknown",
+                };
+                if property_id != "unknown" {
+                    use strawberry_core::commands::keyframe_commands::{AddKeyframeCommand, RemoveKeyframeCommand};
+                    // Remove keyframe at original time, then add at new time/value.
+                    // This uses AddKeyframeCommand's replace semantics for same-time keyframes,
+                    // but we need to handle the time-change case properly.
+                    if (new_time - original_time).abs() > 0.001 {
+                        // Time changed: remove old, add new
+                        // Find the index of the keyframe at the original time
+                        if let Some(track) = self.world.get::<strawberry_core::components::keyframe_track::KeyframeTrack>(clip_entity) {
+                            if let Some(kfs) = track.keyframes(property_id) {
+                                if let Some(idx) = kfs.iter().position(|k| (k.time_secs - original_time).abs() < 1e-6) {
+                                    command_queue.submit(Box::new(RemoveKeyframeCommand::new(
+                                        clip_uuid,
+                                        property_id.to_string(),
+                                        idx,
+                                    )));
+                                }
+                            }
+                        }
+                        command_queue.submit(Box::new(AddKeyframeCommand::new(
+                            clip_uuid,
+                            property_id.to_string(),
+                            new_time,
+                            new_value,
+                        )));
+                    } else {
+                        // Same time, value changed — replace via AddKeyframeCommand
+                        command_queue.submit(Box::new(AddKeyframeCommand::new(
+                            clip_uuid,
+                            property_id.to_string(),
+                            original_time,
+                            new_value,
+                        )));
+                    }
+                }
+            }
+        }
+
+        // Store keyframe drag state in egui memory for persistence
+        if let Some(kf_state) = timeline_response.updated_keyframe_drag_state {
+            ui.memory_mut(|mem| {
+                mem.data
+                    .insert_temp(egui::Id::new("timeline_keyframe_drag_state"), kf_state);
+            });
+        } else {
+            ui.memory_mut(|mem| {
+                mem.data
+                    .remove::<KeyframeDragState>(egui::Id::new("timeline_keyframe_drag_state"));
             });
         }
 

@@ -189,6 +189,15 @@ impl TimelineWidget {
             drag_origin,
         );
 
+        // Keyframe diamond drag handling
+        let (keyframe_edit, updated_keyframe_drag_state) = self.handle_keyframe_drag(
+            ui,
+            &response,
+            content_rect,
+            &painter,
+            drag_origin,
+        );
+
         // Process track header actions into response fields
         let mut toggle_track_mute: Option<(u64, bool)> = None;
         let mut toggle_track_solo: Option<(u64, bool)> = None;
@@ -235,6 +244,8 @@ impl TimelineWidget {
             is_scrubbing,
             toggle_clip_mute,
             selected_track,
+            keyframe_edit,
+            updated_keyframe_drag_state,
         }
     }
 
@@ -356,6 +367,19 @@ impl TimelineWidget {
                         self.hit_test_clip_edge(pointer_pos, content_rect)
                     {
                         DragOrigin::TrimEdge { entity_bits, edge }
+                    } else if super::interaction::hit_test_keyframe_diamond(
+                        pointer_pos,
+                        content_rect,
+                        &self.clips,
+                        &self.tracks,
+                        self.zoom,
+                        self.scroll_x,
+                    )
+                    .is_some()
+                    {
+                        // Keyframe diamond has higher priority than clip body drag.
+                        // The actual hit data is re-fetched in handle_drag when needed.
+                        DragOrigin::KeyframeDiamond
                     } else if self.hit_test_clip(pointer_pos, content_rect).is_some() {
                         DragOrigin::ClipBody
                     } else {

@@ -19,18 +19,18 @@ pub mod widgets;
 pub use widgets::aspect_ratio_dropdown::{AspectRatioDropdown, AspectRatioDropdownResponse};
 
 pub use theme::StrawberryTheme;
+pub use widgets::keyframe_overlay::{
+    render_keyframe_overlays, KeyframeOverlayData, PropertyKeyframeData, OPACITY_CURVE_COLOR,
+    PAN_CURVE_COLOR, VOLUME_CURVE_COLOR,
+};
 pub use widgets::status_bar::{StatusBar, StatusBarConfig, StatusBarResponse};
 pub use widgets::timeline_new::{
-    ClipDragState, ClipInfo, DragOrigin, FilmstripAssetTextures, SlideDragState, SlipDragState,
-    TimelineResponse, TimelineTool, TimelineWidget, TrackInfo, TrimDragState, TrimEdge,
+    ClipDragState, ClipInfo, DragOrigin, FilmstripAssetTextures, KeyframeDragState,
+    SlideDragState, SlipDragState, TimelineResponse, TimelineTool, TimelineWidget, TrackInfo,
+    TrimDragState, TrimEdge,
 };
 pub use widgets::transport::{TransportResponse, TransportWidget};
 pub use widgets::viewport::{
     render_clip_quad, render_clip_quad_identity, GizmoInputHandler, GizmoInputResult, GizmoOverlay,
     SelectedElementData, ViewportWidget, VisibleClip,
-};
-pub use widgets::keyframe_overlay::{
-    KeyframeOverlayData, PropertyKeyframeData,
-    VOLUME_CURVE_COLOR, PAN_CURVE_COLOR, OPACITY_CURVE_COLOR,
-    render_keyframe_overlays,
 };

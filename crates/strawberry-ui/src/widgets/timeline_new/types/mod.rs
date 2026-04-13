@@ -15,6 +15,7 @@ pub mod track;
 // Re-exports for convenience
 pub use clip::{ClipInfo, FilmstripAssetTextures};
 pub use drag_state::{
-    ClipDragState, DragOrigin, SlideDragState, SlipDragState, TrimDragState, TrimEdge,
+    ClipDragState, DragOrigin, KeyframeDragState, SlideDragState, SlipDragState, TrimDragState,
+    TrimEdge,
 };
 pub use track::{TrackInfo, DEFAULT_VIDEO_TRACK_HEIGHT};
